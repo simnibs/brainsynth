@@ -1,0 +1,122 @@
+rng_seed: null
+
+# Segmentation labeling scheme as produced by prepare_freesurfer_data
+# Currently, this is hardcoded in `prepare_freesurfer_data`
+labeling_scheme: incl_csf
+
+# SETTINGS FOR SYNTHESIZED IMAGE(S)
+
+fov:
+  # set origin of synthesized image *relative to* the original image.
+  # Choices:
+  #   center  : center of original image
+  #   random  : random origin
+  #   hemi    : center of hemispheres (left/right selected randomly)
+  # brain = union of lh and rh
+
+  # CURRENTLY SIZE HAS TO BE AN ARRAY!! AND PAD IS IGNORED...
+  center: random_hemi     # brain, image, lh, rh, random, random_hemi, [1,2,3]
+  size: [120, 200, 150]   # brain, image, lh, rh, hemi, [1,2,3]
+  pad: 0                  # 1, [1,2,3]
+  resize_order: "trilinear"
+
+surfaces:
+  resolution: 6 # 5, 6, null (no surfaces)
+
+# Deformation of the initial image (and the resulting FOV)
+deformation:
+  linear:
+    probability: 1.0
+    max_rotation: 15
+    max_shear: 0.2
+    max_scale: 0.2
+    # -/+ for each spatial axis
+    # rotation_range: [15, 15, 15] # degrees!
+    # shear_range: [0.2, 0.2, 0.2]
+    # scale_range: [0.2, 0.2, 0.2]
+
+  nonlinear:
+    probability: 0.0
+    nonlin_scale_min: 0.03
+    nonlin_scale_max: 0.06
+    nonlin_std_max: 4
+    integrate_deformation_fields: True
+    n_steps_svf_integration: 8
+
+  # If true, convert to the segmentation one-hot and resample. Else, resample
+  # and convert to one-hot
+  deform_one_hots: False
+
+flip: # LR flip
+  probability: 0.5
+
+# Intensity profile of the synthesized image
+intensity:
+  # Probability of synthesizing a new contrast
+  probability: 1.0
+
+  # The means and standard deviations from which intensities are drawn (uniform
+  # distributions with the following parameters)
+  mu_offset: 25
+  mu_scale: 200
+  sigma_offset: 5
+  sigma_scale: 20
+
+  gaussian_noise:
+    probability: 1.0
+    mean: 0.0
+    std: 10.0
+    # noise_std_min: 5
+    # noise_std_max: 15
+
+  partial_volume_effect: True # partial volume?
+
+  # bspline_zooming: False # TODO
+
+  gamma_transform:
+    probability: 1.0
+    gamma_range: [0.8, 1.2] # gamma_std: 0.1
+
+# Bias field added to the synthesized image
+biasfield:
+  probability: 1.0
+  scale_min: 0.02
+  scale_max: 0.04
+  std_min: 0.1
+  std_max: 0.6
+
+# Ex vivo
+exvivo:
+  probability: 0.25
+  # prob_vs_photo: 0.66666666666666
+  bag:
+    probability: 0.5
+    scale_min: 0.02
+    scale_max: 0.08
+
+
+photo_mode:
+  probability: 0.0
+
+artifacts:
+  gibbs_noise:
+    probability: 0.1
+    # alpha: (0.0, 1.0)
+  aliasing:
+    probability: 0.1
+  motion:
+    probability: 0.1
+
+# Add pathologies
+
+# #pathology_root_dir: /autofs/vast/lemon/temp_stuff/peirong/data/isles2017/ISLES2017_Training
+
+# pathology:
+#   apply: False
+#   pathologies: null # list of pathology filenames (without .nii extension)
+#   save_pathology: False
+#   prob: 0.
+#   pathology_thres_max: 1.
+#   pathology_mu_multi: 500.
+#   pathology_sig_multi: 50.
+# #########
