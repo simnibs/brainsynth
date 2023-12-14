@@ -16,7 +16,7 @@ fov:
 
   # CURRENTLY SIZE HAS TO BE AN ARRAY!! AND PAD IS IGNORED...
   center: random_hemi     # brain, image, lh, rh, random, random_hemi, [1,2,3]
-  size: [120, 200, 150]   # brain, image, lh, rh, hemi, [1,2,3]
+  size: [192, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
 
@@ -26,7 +26,7 @@ surfaces:
 # Deformation of the initial image (and the resulting FOV)
 deformation:
   linear:
-    probability: 1.0
+    probability: 0.0 # 1.0
     max_rotation: 15
     max_shear: 0.2
     max_scale: 0.2
@@ -45,7 +45,7 @@ deformation:
 
   # If true, convert to the segmentation one-hot and resample. Else, resample
   # and convert to one-hot
-  deform_one_hots: False
+  # deform_one_hots: False
 
 flip: # LR flip
   probability: 0.5
@@ -53,7 +53,7 @@ flip: # LR flip
 # Intensity profile of the synthesized image
 intensity:
   # Probability of synthesizing a new contrast
-  probability: 1.0
+  probability: 0.0 # 0.9
 
   # The means and standard deviations from which intensities are drawn (uniform
   # distributions with the following parameters)
@@ -87,7 +87,7 @@ biasfield:
 
 # Ex vivo
 exvivo:
-  probability: 0.25
+  probability: 0.0
   # prob_vs_photo: 0.66666666666666
   bag:
     probability: 0.5

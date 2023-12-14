@@ -24,7 +24,7 @@ from brainsynth import root_dir
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.constants import filenames
 
-from brainsynth.formatting import filename_sequence, filename_surface
+from brainsynth.constants import filenames
 
 
 """
@@ -35,7 +35,6 @@ n_threads = 2
 force = False
 
 """
-
 
 
 def prepare_freesurfer_data(
@@ -91,7 +90,7 @@ def prepare_freesurfer_data(
     surf_dir = subject_dir / "surf"
 
     out_dir = Path(out_dir) / subject_dir.name
-    fname_synthseg = out_dir / filenames.synthseg
+    fname_synthseg = out_dir / filenames.default_images.synthseg
 
     print(f"Saving data to {out_dir}")
 
@@ -127,7 +126,7 @@ def prepare_freesurfer_data(
     aparc_dat[aparc_dat >= 2000] = lut.Right_Cerebral_Cortex
     aparc_dat[aparc_dat >= 1000] = lut.Left_Cerebral_Cortex
 
-    if not force and not fname_synthseg.exists():
+    if force or not fname_synthseg.exists():
         print("Running SynthSeg")
         cmd = f"mri_synthseg --i {mri_dir / 'nu.mgz'} --o {fname_synthseg} --threads {n_threads}"  # >/dev/null
         subprocess.run(cmd.split(), check=True)
@@ -151,17 +150,18 @@ def prepare_freesurfer_data(
     surface_files = {
         (h, s): out_dir / f"{h}.{s}" for h in {"lh", "rh"} for s in {"white", "pial"}
     }
-    if not force and all(v.exists() for v in surface_files.values()):
+    if force or not all(v.exists() for v in surface_files.values()):
+        print("Resampling surfaces")
+        surfaces = resample_surfaces(
+            surf_dir, out_dir, folding_atlas, sphere_reg_target, n_threads
+        )
+    else:
         print("Reading surfaces")
         surfaces = {}
         for k, v in surface_files.items():
             vertex, faces = nib.freesurfer.read_geometry(v)
             surfaces[k] = Surface(vertex.astype(np.float32), faces.astype(np.int32))
-    else:
-        print("Resampling surfaces")
-        surfaces = resample_surfaces(
-            surf_dir, out_dir, folding_atlas, sphere_reg_target, n_threads
-        )
+
     # Convert surfaces from surface RAS to voxel space
     inv_affine = np.linalg.inv(norm.affine)
     for k, v in surfaces.items():
@@ -203,7 +203,7 @@ def prepare_freesurfer_data(
     print("Writing volumes")
 
     nib.Nifti1Image(norm_dat.astype(IMAGE_DTYPE), affine).to_filename(
-        out_dir / "norm.nii"
+        out_dir / filenames.default_images.norm
     )
     nib.Nifti1Image(gen_labels.astype(LABEL_DTYPE), affine).to_filename(
         out_dir / filenames.default_images.generation
@@ -211,7 +211,9 @@ def prepare_freesurfer_data(
     nib.Nifti1Image(seg_labels, affine, dtype=LABEL_DTYPE).to_filename(
         out_dir / filenames.default_images.segmentation
     )
-    nib.Nifti1Image(bag.astype(IMAGE_DTYPE), affine).to_filename(out_dir / filenames.default_images.bag)
+    nib.Nifti1Image(bag.astype(IMAGE_DTYPE), affine).to_filename(
+        out_dir / filenames.default_images.bag
+    )
     nib.Nifti1Image(
         np.stack([dist_maps[k].astype(IMAGE_DTYPE) for k in keys], -1), affine
     ).to_filename(out_dir / filenames.default_images.distances)
@@ -222,7 +224,6 @@ def prepare_freesurfer_data(
         affine,
         out_dir,
         IMAGE_DTYPE,
-        n_threads,
         coreg_additional_images,
     )
 
@@ -251,10 +252,10 @@ def prepare_freesurfer_data(
         for h in hemispheres:
             torch.save(
                 dict(
-                    white=torch.Tensor(surfaces[h, "white"].vertices[:nv]),
-                    pial=torch.Tensor(surfaces[h, "pial"].vertices[:nv]),
+                    white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
+                    pial=torch.tensor(surfaces[h, "pial"].vertices[:nv]),
                 ),
-                out_dir / f"{filename_surface(i, h)}.pt",
+                out_dir / filenames.surfaces[i, h],
             )
 
     print("Writing auxilliary information")
@@ -271,14 +272,14 @@ def prepare_freesurfer_data(
     bounding_boxes["brain"] = torch.stack((both[:, 0].amin(0), both[:, 1].amax(0)))
 
     labels = dict(
-        generation=torch.IntTensor(np.unique(gen_labels)),
-        segmentation=torch.IntTensor(np.unique(seg_labels)),
+        generation=torch.tensor(np.unique(gen_labels)),
+        segmentation=torch.tensor(np.unique(seg_labels)),
     )
     torch.save(
         dict(
             # affine=torch.from_numpy(affine),
             resolution=torch.from_numpy(affine[:3, :3]).norm(dim=0).float(),
-            shape=torch.IntTensor(norm_dat.shape),
+            shape=torch.tensor(norm_dat.shape),
             bbox=bounding_boxes,
             labels=labels,
         ),
@@ -293,9 +294,9 @@ class Surface:
 
 
 def process_additional_images(
-    subject_dir, images, affine, out_dir, dtype, n_threads=2, apply_coreg=True
+    subject_dir, images, affine, out_dir, dtype, apply_coreg=True
 ):
-    """Register to /mri/orig/001.mgz, conform, and align to identity affine."""
+    """Register to /mri/orig.mgz, conform, and align to identity affine."""
     if images is None:
         return
 
@@ -320,8 +321,15 @@ def process_additional_images(
             image = Path(image)
 
             if apply_coreg:
-                subprocess.run(cmd_coreg.format(source=image, reference=reference, reg=tmp_reg).split(), check=True)
-                kwargs = dict(reg=tmp_reg, reference=reference, input=image, output=tmp_mgz)
+                subprocess.run(
+                    cmd_coreg.format(
+                        source=image, reference=reference, reg=tmp_reg
+                    ).split(),
+                    check=True,
+                )
+                kwargs = dict(
+                    reg=tmp_reg, reference=reference, input=image, output=tmp_mgz
+                )
             else:
                 kwargs = dict(input=image, output=tmp_mgz)
 
@@ -348,7 +356,7 @@ def process_additional_images(
                     np.clip(conformed_dat, 0, 1, out=conformed_dat)
 
             nib.Nifti1Image(conformed_dat.astype(dtype), affine).to_filename(
-                out_dir / f"{filename_sequence(sequence)}.nii"
+                out_dir / getattr(filenames.optional_images, sequence)
             )
 
 
@@ -755,5 +763,8 @@ def parse_args(argv):
 if __name__ == "__main__":
     args = parse_args(sys.argv[1:])
     prepare_freesurfer_data(
-        getattr(args, "subject-dir"), getattr(args, "out-dir"), args.threads, args.force
+        getattr(args, "subject-dir"),
+        getattr(args, "out-dir"),
+        n_threads=args.threads,
+        force=args.force,
     )

@@ -84,7 +84,7 @@ nib.freesurfer.write_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/gen
 
 
 class Synthesizer(torch.nn.Module):
-    def __init__(self, config=None, device="cpu"):
+    def __init__(self, config=None, ensure_divisible_by=None, device="cpu"):
         """Dataset synthesizer.
 
         Parameters
@@ -96,6 +96,7 @@ class Synthesizer(torch.nn.Module):
 
         self.config = config or load_config()
         self.device = device
+        self.fov_size_divisor = ensure_divisible_by
 
         # Map to tensors and device
         match self.config.fov.size:
@@ -115,6 +116,8 @@ class Synthesizer(torch.nn.Module):
 
         if self.config.rng_seed is not None:
             torch.manual_seed(self.config.rng_seed)
+
+        self.initialize_state()
 
         self.linear_transform = None
         self.scale_distance = 1.0
@@ -213,6 +216,13 @@ class Synthesizer(torch.nn.Module):
             )
         )
 
+    def ensure_divisible_size(self, size):
+        if self.fov_size_divisor is not None:
+            min_size = size / self.fov_size_divisor
+            if (residual := torch.ceil(min_size) - min_size).any():
+                return (size + self.fov_size_divisor * residual).to(size.dtype)
+        return size
+
     @staticmethod
     def center_from_shape(shape):
         return 0.5 * (shape - 1.0)
@@ -264,12 +274,14 @@ class Synthesizer(torch.nn.Module):
         return (probability == 1.0) or (torch.rand(1, device=self.device) < probability)
         # monai.transforms.utils.rand_choice(probability)
 
-    def set_photo_mode(self, force_state=None):
-        if force_state is None:
-            self.photo_mode = self.check_prob(self.config.photo_mode.probability)
-        else:
-            self.photo_mode = force_state
-        self.spacing = 2.0 + 10 * torch.rand(1) if self.photo_mode else None
+    # def set_photo_mode(self, force_state=None):
+    #     if force_state is None:
+    #         self.photo_mode = self.dos["photo_mode"]
+    #     else:
+    #         self.photo_mode = force_state
+
+    def set_photo_mode_spacing(self):
+        self.spacing = 2.0 + 10 * torch.rand(1) if self.do_task["photo_mode"] else None
 
     def get_roi_center_size(self, surfaces, bbox, img_shape):
         """
@@ -309,31 +321,67 @@ class Synthesizer(torch.nn.Module):
     def remove_batch_dim_(self, data):
         # Remove batch dimension! We add it again later...
         for k, v in data.items():
-            if v.ndim == 5:
+            if v.is_batch:
                 data[k] = v[0]
 
     def add_batch_dim_(self, data):
         # ADD BACK BATCH DIM !
         for k, v in data.items():
-            if k == "surfaces":
-                for hemi, vv in v.items():
-                    for surf, vvv in vv.items():
-                        # if surf != "faces":
-                        data[k][hemi][surf] = vvv[None]
-            else:
-                if v.ndim == 4:
-                    data[k] = v[None]
+            if not v.is_batch:
+                data[k] = v[None]
+
+
+    def add_batch_dim_surface(self, data):
+        # ADD BACK BATCH DIM !
+        for hemi, vv in data.items():
+            for surf, vvv in vv.items():
+                # if surf != "faces":
+                data[hemi][surf] = vvv[None]
+
+
+    def initialize_state(self):
+        self.do_task = dict(
+            bag = self.check_prob(self.config.exvivo.bag.probability),
+            exvivo = self.check_prob(self.config.exvivo.probability),
+            flip = self.check_prob(self.config.flip.probability),
+            intensity = self.check_prob(self.config.intensity.probability),
+            linear_deform = self.check_prob(self.config.deformation.linear.probability),
+            nonlinear_deform = self.check_prob(self.config.deformation.nonlinear.probability),
+            photo_mode = self.check_prob(self.config.photo_mode.probability),
+        )
+        self.set_photo_mode_spacing()
+
 
     def forward(self, images, surfaces, info):
         with torch.device(self.device):
-            input_resolution = info["resolution"]
-            img_shape = info["shape"]
+
+            # ugly hack for now...
+
+            # remove batch dim from info tensors...
+            for k,v in info.items():
+                if isinstance(v, dict):
+                    for kk, vv in v.items():
+                        info[k][kk] = vv.squeeze()
+                else:
+                    info[k] = v.squeeze()
+
+            # remove batch dim from surfaces...
+            for hemi,surfs in surfaces.items():
+                for surf,t in surfs.items():
+                    surfaces[hemi][surf] = t.squeeze(0)
+
+            self.initialize_state()
+
+
+            original_shape = info["shape"]
+
+            self.has_surfaces = len(surfaces) > 0
 
             # HANDLE THIS INTERNALLY INSTEAD
             self.remove_batch_dim_(images)
 
             roi_center, roi_size = self.get_roi_center_size(
-                surfaces, info["bbox"], img_shape
+                surfaces, info["bbox"], original_shape
             )
 
             if not self.static_fov:
@@ -345,33 +393,32 @@ class Synthesizer(torch.nn.Module):
             # as this will give us a bounding box
             # of the image region we need, so we don't have to read the whole thing from disk (only works for uncompressed niftis!
 
-            do_synthesis = self.check_prob(self.config.intensity.probability)
-
-            # Get the deformation parameters
-            if do_synthesis:
-                self.set_photo_mode()
-            else:
-                self.set_photo_mode(force_state=False)
 
             self.randomize_linear_transform()
             self.randomize_nonlinear_transform()
-            self.set_deformed_grid(img_shape, deformed_origin)
 
+            self.construct_deformed_grid(original_shape, deformed_origin)
+
+            # Process images
+            images = self.crop_images(images)
             images = self.preprocess_images(images)
-            surfaces = self.preprocess_surfaces(surfaces, deformed_origin)
+            deformed = self.transform_images(images)
+            deformed = self.post_process_images_(deformed)
+            deformed |= self.synthesize_image(images["generation"], info["resolution"])
 
-            # Synthesize image
-            if do_synthesis:
-                data = self.process_sample(input_resolution, images, surfaces)
-            else:
-                data = images
-                # data["synth"] = ???
-                data["surfaces"] = surfaces
+            surfaces = self.transform_surfaces(surfaces, deformed_origin)
+
+            deformed = self.flip_images(deformed)
+            surfaces = self.flip_surfaces(surfaces, next(iter(deformed.values())).shape)
+
+            # if self.has_surfaces:
+            #     deformed["surface"] = surfaces
 
             # HANDLE THIS INTERNALLY INSTEAD
-            self.add_batch_dim_(data)
+            self.add_batch_dim_(deformed)
+            self.add_batch_dim_surface(surfaces)
 
-            return data
+            return deformed, surfaces
 
     # def randomize_linear_transform(self):
     #     # By default RandAffine generates a new random affine *each time* it is
@@ -396,7 +443,7 @@ class Synthesizer(torch.nn.Module):
     def randomize_linear_transform(self):
         cfg = self.config.deformation.linear
 
-        if not self.check_prob(cfg.probability):
+        if not self.do_task["linear_deform"]:
             self.linear_transform = None
             self.scale_distance = 1.0
             return
@@ -462,7 +509,7 @@ class Synthesizer(torch.nn.Module):
         """
         cfg = self.config.deformation.nonlinear
 
-        if not self.check_prob(cfg.probability):
+        if not self.do_task["nonlinear_deform"]:
             self.nonlinear_transform_fwd = None
             self.nonlinear_transform_bwd = None
             return
@@ -471,7 +518,7 @@ class Synthesizer(torch.nn.Module):
             cfg.nonlin_scale_max - cfg.nonlin_scale_min
         )
         size_F_small = torch.round(nonlin_scale * self.fov_size).to(torch.int)
-        if self.photo_mode:
+        if self.do_task["photo_mode"]:
             size_F_small[1] = torch.round(self.fov_size[1] / self.spacing).to(
                 size_F_small.dtype
             )
@@ -480,10 +527,10 @@ class Synthesizer(torch.nn.Module):
         Fsmall = nonlin_std * torch.randn([3, *size_F_small])
         F = self.resize_to_fov(Fsmall)
 
-        if self.photo_mode:
+        if self.do_task["photo_mode"]:
             F[1] = 0
 
-        if self.config.surfaces.resolution is not None:  # NOTE: slow
+        if self.has_surfaces and self.config.surfaces.resolution is not None:  # NOTE: slow
             steplength = 1.0 / (2.0**cfg.n_steps_svf_integration)
             Fsvf = F * steplength
             for _ in torch.arange(cfg.n_steps_svf_integration):
@@ -505,25 +552,27 @@ class Synthesizer(torch.nn.Module):
         self.nonlinear_transform_fwd = F
         self.nonlinear_transform_bwd = Fneg
 
-    def set_deformed_grid(self, shape, center_coords):
-        do_linear_transform = self.linear_transform is not None
-        do_nonlinear_transform = self.nonlinear_transform_fwd is not None
+    def construct_deformed_grid(self, shape, center_coords):
 
-        if not do_linear_transform or not do_nonlinear_transform:
+        if not self.do_task["linear_deform"] or not self.do_task["nonlinear_deform"]:
             self.deformed_grid = None
             # make a spatial cropper that includes the to-be-sampled voxels
+            self.roi_center = center_coords
+            self.roi_size = self.ensure_divisible_size(self.fov_size)
             self.spatial_crop = monai.transforms.SpatialCrop(
-                center_coords, self.fov_size
+                roi_center=self.roi_center,
+                roi_size=self.roi_size,
             )
+            return
 
         deformed_grid = self.grid_center.clone()  # the centered grid
 
-        if do_nonlinear_transform:
+        if self.do_task["nonlinear_deform"]:
             nonlin_deform = self.as_channel_last(self.nonlinear_transform_fwd)
             # avoid in-place modifications
             deformed_grid += nonlin_deform
 
-        if do_linear_transform:
+        if self.do_task["linear_deform"]:
             # deformed_grid = self.affine_grid(deformed_grid)
             deformed_grid = deformed_grid @ self.linear_transform.T
 
@@ -536,10 +585,19 @@ class Synthesizer(torch.nn.Module):
         margin_min = deformed_grid.amin((0, 1, 2)).floor()
         margin_max = deformed_grid.amax((0, 1, 2)).ceil() + 1
 
+        print(margin_min)
+        print(margin_max)
+
+        self.roi_size = self.ensure_divisible_size(margin_max-margin_min)
+        self.roi_center = self.center_from_shape(self.roi_size)
+
         # make a spatial cropper that includes the to-be-sampled voxels
         self.spatial_crop = monai.transforms.SpatialCrop(
-            roi_start=margin_min, roi_end=margin_max
+            roi_center=self.roi_center, roi_size=self.roi_size,
         )
+        # self.spatial_crop = monai.transforms.SpatialCrop(
+        #     roi_start=margin_min, roi_end=margin_max
+        # )
 
         self.deformed_grid = deformed_grid - margin_min
 
@@ -549,35 +607,38 @@ class Synthesizer(torch.nn.Module):
         #     # update the grid accordingly
         #     return deformed_grid - margin_min
 
-    def apply_spatial_crop_images(self, images):
+    def crop_images(self, images):
         return {k: self.spatial_crop(v) for k, v in images.items()}
 
     def preprocess_images(
         self,
         images: dict,
     ):
-        assert "generation" in images, "generation image is needed for synthesis"
+        # assert "generation" in images, "generation image is needed for synthesis"
 
-        images = self.apply_spatial_crop_images(images)
 
-        gen_label = images["generation"]
+        # if (k := "norm") in images:
+        #     # Normalize values
+        #     if "generation" in images:
+        #         images[k].clamp_(0, None)
+        #         images[k] /= torch.median(
+        #             images[k][images["generation"] == lut.Left_Cerebral_White_Matter]
+        #         )
+        #     else:
+        #         images[k] = self.scale_intensity(images[k])
 
-        if (k := "segmentation") in images:
-            seg_label = images["segmentation"]
         if (k := "bag") in images:
             images[k] /= self.scale_distance
+
         if (k := "distances") in images:
             images[k] /= self.scale_distance
-        if (k := "t1") in images:
-            images[k].clamp_(0, None)
-            images[k] /= torch.median(
-                images[k][images["generation"] == lut.Left_Cerebral_White_Matter]
-            )
 
         # Decide if we're simulating ex vivo (and possibly a bag) or photos
-        if self.photo_mode or self.check_prob(self.config.exvivo.probability):
+        if self.do_task["photo_mode"] or self.do_task["exvivo"]:
+            gen_label = images["generation"]
             gen_label[gen_label > 255] = lut.Unknown  # kill extracerebral
-            if self.photo_mode:
+            if self.do_task["photo_mode"]:
+                seg_label = images["segmentation"]
                 test_elements = torch.IntTensor(
                     [
                         lut.Left_Cerebellum_White_Matter,
@@ -614,9 +675,7 @@ class Synthesizer(torch.nn.Module):
                         (gen_label == lut.Unknown) & (Dpial < th)
                     ] = lut.Left_Lateral_Ventricle
 
-            elif ("bag" in images) and self.check_prob(
-                self.config.exvivo.bag.probability
-            ):
+            elif ("bag" in images) and self.do_task["bag"]:
                 gen_shape = torch.as_tensor(gen_label.shape)
                 bag_scale = self.config.exvivo.bag.scale_min + torch.rand(1) * (
                     self.config.exvivo.bag.scale_max - self.config.exvivo.bag.scale_min
@@ -651,8 +710,8 @@ class Synthesizer(torch.nn.Module):
             )
         return v
 
-    def preprocess_surfaces(self, surfaces, deformed_origin):
-        if len(surfaces) > 0:
+    def transform_surfaces(self, surfaces, deformed_origin):
+        if self.has_surfaces:
             inv_lin_deform = (
                 torch.linalg.inv(self.linear_transform)
                 if self.linear_transform is not None
@@ -682,7 +741,7 @@ class Synthesizer(torch.nn.Module):
         sigmas = cfg.sigma_offset + cfg.sigma_scale * torch.rand(n)
 
         # set the background to zero every once in a while (or always in photo mode)
-        if self.photo_mode or torch.rand(1) < 0.5:
+        if self.do_task["photo_mode"] or torch.rand(1) < 0.5:
             mus[0] = 0
 
         return mus, sigmas
@@ -712,103 +771,120 @@ class Synthesizer(torch.nn.Module):
 
         return SYN
 
-    def process_sample(
-        self,
-        input_resolution: torch.Tensor,
-        images: dict,
-        surfaces: None | dict = None,
-        synthesize_contrast: bool = True,
-    ):
-        images["synth"] = self.synthesize_contrast(images["generation"])
 
-        target_resolution, thickness = self.random_sampler(input_resolution)
-
-        deformed_grid = self.deformed_grid
-
-        # Apply deformation to images
+    def transform_images(self, images):
         deformed = {}
         for name, img in images.items():
             match name:
                 case "generation":
                     pass
                 case "segmentation":
-                    if self.config.deformation.deform_one_hots:
-                        onehot = self.as_onehot(img)
-                        onehot = self.apply_grid_sample(onehot, deformed_grid)
-                    else:
-                        def_labels = self.apply_grid_sample(
-                            img.float(), deformed_grid, mode="nearest"
-                        )
-                        onehot = self.as_onehot(def_labels)
-                    deformed["label"] = def_labels  # this should be handled...
-                    deformed["segmentation"] = onehot
+                    # if self.config.deformation.deform_one_hots:
+                    #     onehot = self.as_onehot(img)
+                    #     onehot = self.apply_grid_sample(onehot, self.deformed_grid)
+                    # else:
+                    #     def_labels = self.apply_grid_sample(
+                    #         img.float(), self.deformed_grid, mode="nearest"
+                    #     )
+                    #     onehot = self.as_onehot(def_labels)
+                    # deformed["label"] = def_labels  # this should be handled...
+                    # deformed["segmentation"] = onehot
+
+                    deformed[name] = self.apply_grid_sample(
+                        img.float(), self.deformed_grid, mode="nearest"
+                    )
                 case "distances":
                     # NOTE padding mode in Eugenio's version was distances.amax()
                     deformed[name] = self.apply_grid_sample(
-                        img, deformed_grid, padding_mode="border"
+                        img, self.deformed_grid, padding_mode="border"
                     )
                 case _:
                     # could also include pathologies...
-                    deformed[name] = self.apply_grid_sample(img, deformed_grid)
-
-        # log transformed bias field
-        deformed["biasfield"] = self.synthesize_bias_field()
-        # biasfield = monai.transforms.RandBiasField(degree=5, coeff_range=(0,0.1), prob=0.5)
-
-        #
-        # deformed["synth_clean"] = deformed["synth"].clone().detach()
-
-        if synthesize_contrast:
-            synth = self.gamma_transform(deformed["synth"])
-            synth = self.add_bias_field(synth, deformed["biasfield"])
-            synth = self.simulate_resolution(
-                synth, input_resolution, target_resolution, thickness
-            )
-            deformed["synth"] = synth
-
-        # Remove background from real images
-        if "t1" in deformed:
-            deformed["t1"] *= 1.0 - deformed["segmentation"][lut.Unknown]
-
-        deformed, surfaces = self.flip_images_and_surfaces(deformed, surfaces)
-
-        if len(surfaces) > 0:
-            deformed["surfaces"] = surfaces
+                    deformed[name] = self.apply_grid_sample(img, self.deformed_grid)
 
         return deformed
 
-    def flip_images_and_surfaces(self, deformed, surfaces):
-        if self.check_prob(self.config.flip.probability):  # Flip 50
-            # images
-            for k, v in deformed.items():
-                deformed[k] = self.flip_lr(v)
-                if k == "segmentation":
-                    deformed[k] = deformed[k][self.vflip]
-                elif k == "distances":
-                    deformed[k] = deformed[k][[2, 3, 0, 1]]  # flip left/right
+    def post_process_images_(self, images):
+        """In-place"""
+        if "segmentation" in images:
+            images["segmentation"] = self.as_onehot(images["segmentation"])
 
-            # surfaces
-            if len(surfaces) > 0:
-                width = deformed["synth"].shape[1]  # assumes C,W,H,D
-                # surfs = {"white", "pial"}
-                for hemi, surfs in surfaces.items():  # hemisphere dicts
-                    # for s in surfs:
-                    # flip coordinates
-                    for s in surfs:
-                        surfaces[hemi][s][:, 0] *= -1.0
-                        surfaces[hemi][s][:, 0] += width - 1.0
+        for name in images:
+            match name:
+                case "norm":
+                    # Remove background from real images
+                    # NOTE Perhaps we shouldn't do this???
+                    images["norm"] *= 1.0 - images["segmentation"][lut.Unknown]
 
-                    # flip vertex ordering to preserve normal direction
-                    # hv["faces"] = hv["faces"][:, (0, 2, 1)]
+        return images
 
-                # NOTE
-                # swap label (e.g., lh -> rh) when flipping image. Not sure if
-                # this is the best thing to do but at least ensures some kind
-                # of consistency: when flipping then faces need to be reordered
-                # which if also the case when for rh compared to lh.
-                surfaces = {HEMI_FLIP[h]: v for h, v in surfaces.items()}
 
-        return deformed, surfaces
+    def synthesize_image(
+        self, gen_label: torch.Tensor, input_resolution: torch.Tensor,
+    ):
+        if not self.do_task["intensity"]:
+            return {}
+
+        target_resolution, thickness = self.random_sampler(input_resolution)
+
+        # Generate (log-transformed) bias field
+
+        biasfield = self.synthesize_bias_field()
+        # biasfield = monai.transforms.RandBiasField(degree=5, coeff_range=(0,0.1), prob=0.5)
+
+        # Synthesize the new contrast and deform it
+        synth = self.apply_grid_sample(
+            self.synthesize_contrast(gen_label), self.deformed_grid
+        )
+
+        # Manipulate synthesizer image
+
+        # deformed["synth_clean"] = deformed["synth"].clone().detach()
+        synth = self.gamma_transform(synth)
+        synth = self.add_bias_field(synth, biasfield)
+        synth = self.simulate_resolution(
+            synth, input_resolution, target_resolution, thickness
+        )
+
+        return dict(biasfield = biasfield, synth = synth)
+
+
+    def flip_images(self, deformed):
+        if not self.do_task["flip"]:
+            return deformed
+
+        for k, v in deformed.items():
+            deformed[k] = self.flip_lr(v)
+            if k == "segmentation":
+                deformed[k] = deformed[k][self.vflip]
+            elif k == "distances":
+                deformed[k] = deformed[k][[2, 3, 0, 1]]  # flip left/right
+
+        return deformed
+
+    def flip_surfaces(self, surfaces, shape):
+        # surfaces
+        if not self.has_surfaces or not self.do_task["flip"]:
+            return surfaces
+
+        width = shape[1]  # assumes C,W,H,D
+        # surfs = {"white", "pial"}
+        for hemi, surfs in surfaces.items():  # hemisphere dicts
+            # for s in surfs:
+            # flip coordinates
+            for s in surfs:
+                surfaces[hemi][s][:, 0] *= -1.0
+                surfaces[hemi][s][:, 0] += width - 1.0
+
+            # flip vertex ordering to preserve normal direction
+            # hv["faces"] = hv["faces"][:, (0, 2, 1)]
+
+        # NOTE
+        # swap label (e.g., lh -> rh) when flipping image. Not sure if
+        # this is the best thing to do but at least ensures some kind
+        # of consistency: when flipping then faces need to be reordered
+        # which if also the case when for rh compared to lh.
+        return {HEMI_FLIP[h]: v for h, v in surfaces.items()}
 
     def synthesize_bias_field(self):
         """Synthesize a log-transformed bias field."""
@@ -817,7 +893,7 @@ class Synthesizer(torch.nn.Module):
         bf_scale = bf.scale_min + torch.rand(1) * (bf.scale_max - bf.scale_min)
         size_BF_small = torch.round(bf_scale * self.fov_size).to(torch.int)
 
-        if self.photo_mode:
+        if self.do_task["photo_mode"]:
             size_BF_small[1] = torch.round(self.fov_size[1] / self.spacing).to(
                 torch.int
             )
@@ -854,7 +930,7 @@ class Synthesizer(torch.nn.Module):
         # target resolution
         stds = (
             (0.85 + 0.3 * torch.rand(1))
-            * torch.log(torch.Tensor([5]))
+            * torch.log(torch.tensor([5]))
             / torch.pi
             * thickness
             / input_resolution
@@ -897,9 +973,9 @@ class Synthesizer(torch.nn.Module):
         return SYN_final
 
     def random_sampler(self, in_res):
-        if self.photo_mode:
-            out_res = torch.Tensor([in_res[0], self.spacing, in_res[2]])
-            thickness = torch.Tensor([in_res[0], 0.0001, in_res[2]])
+        if self.do_task["photo_mode"]:
+            out_res = torch.tensor([in_res[0], self.spacing, in_res[2]])
+            thickness = torch.tensor([in_res[0], 0.0001, in_res[2]])
         else:
             out_res, thickness = resolution_sampler(self.device)
         return out_res, thickness

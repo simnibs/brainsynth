@@ -1,2 +1,2 @@
-# mrisynth
-MRI synthesizer.
+# BrainSynth
+Brain scan synthesizer.
