@@ -552,6 +552,32 @@ class Synthesizer(torch.nn.Module):
         self.nonlinear_transform_fwd = F
         self.nonlinear_transform_bwd = Fneg
 
+    def adjust_roi_center(self, shape):
+        """Adjust ROI center such that the spatial cropping results in
+        the expected size. This might not happen if the slices extend
+        beyond the image size (e.g., less than zero, larger than 256)
+        in which case we will move the ROI center."""
+        shape = torch.tensor(shape)
+
+        halfsize = 0.5 *self.roi_size
+        roi_start = (self.roi_center - halfsize).to(self.roi_center.dtype)
+        roi_end = (self.roi_center + halfsize).to(self.roi_center.dtype)
+
+        # we could just set roi as image center and size as image size
+        assert torch.all(roi_end - roi_start <= shape), f"ROI ({roi_end - roi_start}) is larger than image ({shape})"
+
+        move_roi_center = torch.zeros_like(self.roi_center)
+
+        # check less than 0
+        outside = roi_start < 0
+        move_roi_center[outside] -= roi_start[outside]
+
+        # check larger than image shape
+        mm = (roi_end_d := roi_end - shape) > 0
+        move_roi_center[mm] -= roi_end_d[mm]
+
+        self.roi_center += move_roi_center
+
     def construct_deformed_grid(self, shape, center_coords):
 
         if not self.do_task["linear_deform"] or not self.do_task["nonlinear_deform"]:
@@ -559,6 +585,8 @@ class Synthesizer(torch.nn.Module):
             # make a spatial cropper that includes the to-be-sampled voxels
             self.roi_center = center_coords
             self.roi_size = self.ensure_divisible_size(self.fov_size)
+            self.adjust_roi_center(shape)
+
             self.spatial_crop = monai.transforms.SpatialCrop(
                 roi_center=self.roi_center,
                 roi_size=self.roi_size,
@@ -585,11 +613,9 @@ class Synthesizer(torch.nn.Module):
         margin_min = deformed_grid.amin((0, 1, 2)).floor()
         margin_max = deformed_grid.amax((0, 1, 2)).ceil() + 1
 
-        print(margin_min)
-        print(margin_max)
-
         self.roi_size = self.ensure_divisible_size(margin_max-margin_min)
         self.roi_center = self.center_from_shape(self.roi_size)
+        self.adjust_roi_center(shape)
 
         # make a spatial cropper that includes the to-be-sampled voxels
         self.spatial_crop = monai.transforms.SpatialCrop(

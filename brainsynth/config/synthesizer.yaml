@@ -16,12 +16,10 @@ fov:
 
   # CURRENTLY SIZE HAS TO BE AN ARRAY!! AND PAD IS IGNORED...
   center: random_hemi     # brain, image, lh, rh, random, random_hemi, [1,2,3]
-  size: [192, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
+  size: [160, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
 
-surfaces:
-  resolution: 6 # 5, 6, null (no surfaces)
 
 # Deformation of the initial image (and the resulting FOV)
 deformation:
