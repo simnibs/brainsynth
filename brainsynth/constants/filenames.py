@@ -34,5 +34,10 @@ surfaces = {
     (res,hemi): f"surface.{res}.{hemi}.pt" for res,hemi in itertools.product(SURFACE_RESOLUTIONS, HEMISPHERES)
 }
 
+surface_templates = {
+    (res,hemi): f"surface-template.{res}.{hemi}.pt" for res,hemi in itertools.product(SURFACE_RESOLUTIONS, HEMISPHERES)
+}
+
+
 info = "info.pt"
 

@@ -6,14 +6,19 @@ import torch
 
 from brainsynth.transforms import Reindex
 from brainsynth.spatial_utils import get_roi_center_size
-from brainsynth.constants import filenames
-from brainsynth.constants.constants import HEMISPHERES
+from brainsynth.constants import constants, filenames
 
 filename_subjects = lambda dataset: f"subjects_{dataset}.txt"
 
 
 def get_dataloader_concatenated_and_split(
-    base_dir, datasets, optional_images, dataset_kwargs, dataset_splits, dataloader_kwargs, split_rng_seed=None,
+    base_dir,
+    datasets,
+    optional_images,
+    dataset_kwargs,
+    dataset_splits,
+    dataloader_kwargs,
+    split_rng_seed=None,
 ):
     """Construct a dataloader by concatenating `datasets` (e.g., ds0, ds1) and
     splitting according to `dataset_splits` (e.g., train, validation).
@@ -296,10 +301,10 @@ class CroppedDataset(torch.utils.data.Dataset):
                 surface_hemi = []
             case list() | tuple():
                 assert all(
-                    h in HEMISPHERES for h in surface_hemi
+                    h in constants.HEMISPHERES for h in surface_hemi
                 ), "Invalid arguments to `surface_hemi`"
             case "both":
-                surface_hemi = HEMISPHERES
+                surface_hemi = constants.HEMISPHERES
             case "lh" | "rh":
                 surface_hemi = [surface_hemi]
         self.surface_hemi = surface_hemi
@@ -340,7 +345,9 @@ class CroppedDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         if self.return_dataset_id:
-            return self.dataset_id, *self.load_data(self.dataset_dir / self.subjects[idx])
+            return self.dataset_id, *self.load_data(
+                self.dataset_dir / self.subjects[idx]
+            )
         else:
             return self.load_data(self.dataset_dir / self.subjects[idx])
 
@@ -351,18 +358,31 @@ class CroppedDataset(torch.utils.data.Dataset):
 
     def load_surfaces(self, subject_dir):
         if self.surface_resolution is None:
-            return {}
+            return {}, {}
         else:
             if self.surface_hemi == "random":
-                surface_hemi = [HEMISPHERES[torch.randint(0, 2, (1,))]]
+                surface_hemi = [constants.HEMISPHERES[torch.randint(0, 2, (1,))]]
             else:
                 surface_hemi = self.surface_hemi
-            return {
-                h: torch.load(
-                    subject_dir / filenames.surfaces[self.surface_resolution, h]
+            surfaces = {
+                h: {
+                    k: monai.data.MetaTensor(v)
+                    for k, v in torch.load(
+                        subject_dir / filenames.surfaces[self.surface_resolution, h]
+                    ).items()
+                }
+                for h in surface_hemi
+            }
+            # load the initial resolution
+            r = constants.SURFACE_RESOLUTIONS[0]
+            initial_vertices = {
+                h: monai.data.MetaTensor(
+                    torch.load(subject_dir / filenames.surface_templates[r, h])
                 )
                 for h in surface_hemi
             }
+
+            return surfaces, initial_vertices
 
     def load_images(self, subject_dir, spatial_crop=None):
         images = {}
@@ -392,6 +412,6 @@ class CroppedDataset(torch.utils.data.Dataset):
         spatial_crop = self.get_spatial_crop(info)
 
         images = self.load_images(subject_dir, spatial_crop)
-        surfaces = self.load_surfaces(subject_dir)
+        surfaces, initial_vertices = self.load_surfaces(subject_dir)
 
-        return images, surfaces, info
+        return images, surfaces, initial_vertices, info

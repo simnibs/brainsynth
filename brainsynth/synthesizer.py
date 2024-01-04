@@ -206,7 +206,9 @@ class Synthesizer(torch.nn.Module):
             ]
         )
         # n_neutral_labels = self.config.labeling.synth.incl_csf_n_neutral_labels
-        n_neutral_labels = getattr(constants.n_neutral_labels, self.config.labeling_scheme)
+        n_neutral_labels = getattr(
+            constants.n_neutral_labels, self.config.labeling_scheme
+        )
         nlat = int((n_seg_labels - n_neutral_labels) / 2.0)
         self.vflip = torch.cat(
             (
@@ -330,14 +332,12 @@ class Synthesizer(torch.nn.Module):
             if not v.is_batch:
                 data[k] = v[None]
 
-
     def add_batch_dim_surface(self, data):
         # ADD BACK BATCH DIM !
         for hemi, vv in data.items():
             for surf, vvv in vv.items():
                 # if surf != "faces":
                 data[hemi][surf] = vvv[None]
-
 
     def initialize_state(self):
         self.do_task = dict(
@@ -346,19 +346,21 @@ class Synthesizer(torch.nn.Module):
             flip = self.check_prob(self.config.flip.probability),
             intensity = self.check_prob(self.config.intensity.probability),
             linear_deform = self.check_prob(self.config.deformation.linear.probability),
-            nonlinear_deform = self.check_prob(self.config.deformation.nonlinear.probability),
+            nonlinear_deform = self.check_prob(
+                self.config.deformation.nonlinear.probability
+            ),
             photo_mode = self.check_prob(self.config.photo_mode.probability),
         )
         self.set_photo_mode_spacing()
 
+    def forward(self, images, true_surfs, init_surfs, info):
+        # template_surface = template_surface or {}
 
-    def forward(self, images, surfaces, info):
         with torch.device(self.device):
-
             # ugly hack for now...
 
             # remove batch dim from info tensors...
-            for k,v in info.items():
+            for k, v in info.items():
                 if isinstance(v, dict):
                     for kk, vv in v.items():
                         info[k][kk] = vv.squeeze()
@@ -366,22 +368,24 @@ class Synthesizer(torch.nn.Module):
                     info[k] = v.squeeze()
 
             # remove batch dim from surfaces...
-            for hemi,surfs in surfaces.items():
-                for surf,t in surfs.items():
-                    surfaces[hemi][surf] = t.squeeze(0)
+            for hemi, surfs in true_surfs.items():
+                for surf, t in surfs.items():
+                    true_surfs[hemi][surf] = t.squeeze(0)
 
-            self.initialize_state()
-
-
-            original_shape = info["shape"]
-
-            self.has_surfaces = len(surfaces) > 0
+            # and initial surfaces
+            for hemi, surf in init_surfs.items():
+                init_surfs[hemi] = surf.squeeze(0)
 
             # HANDLE THIS INTERNALLY INSTEAD
             self.remove_batch_dim_(images)
 
+            self.initialize_state()
+
+            original_shape = info["shape"]
+            self.has_surfaces = len(true_surfs) > 0
+
             roi_center, roi_size = self.get_roi_center_size(
-                surfaces, info["bbox"], original_shape
+                true_surfs, info["bbox"], original_shape
             )
 
             if not self.static_fov:
@@ -393,7 +397,6 @@ class Synthesizer(torch.nn.Module):
             # as this will give us a bounding box
             # of the image region we need, so we don't have to read the whole thing from disk (only works for uncompressed niftis!
 
-
             self.randomize_linear_transform()
             self.randomize_nonlinear_transform()
 
@@ -403,22 +406,26 @@ class Synthesizer(torch.nn.Module):
             images = self.crop_images(images)
             images = self.preprocess_images(images)
             deformed = self.transform_images(images)
-            deformed = self.post_process_images_(deformed)
+            deformed = self.postprocess_images_(deformed)
             deformed |= self.synthesize_image(images["generation"], info["resolution"])
-
-            surfaces = self.transform_surfaces(surfaces, deformed_origin)
-
             deformed = self.flip_images(deformed)
-            surfaces = self.flip_surfaces(surfaces, next(iter(deformed.values())).shape)
 
-            # if self.has_surfaces:
-            #     deformed["surface"] = surfaces
+            out_shape = next(iter(deformed.values())).shape
+
+            # Process surfaces
+            true_surfs = self.transform_surfaces(true_surfs, deformed_origin)
+            true_surfs = self.flip_surfaces(true_surfs, out_shape)
+
+            # Process template surfaces
+            init_surfs = self.transform_surfaces(init_surfs, deformed_origin)
+            init_surfs = self.flip_surfaces(init_surfs, out_shape)
 
             # HANDLE THIS INTERNALLY INSTEAD
             self.add_batch_dim_(deformed)
-            self.add_batch_dim_surface(surfaces)
+            self.add_batch_dim_surface(true_surfs)
+            self.add_batch_dim_(init_surfs)
 
-            return deformed, surfaces
+            return deformed, true_surfs, init_surfs
 
     # def randomize_linear_transform(self):
     #     # By default RandAffine generates a new random affine *each time* it is
@@ -456,9 +463,10 @@ class Synthesizer(torch.nn.Module):
         # we divide distance maps by this, not perfect, but better than nothing
         scaling_factor_distances = torch.prod(scalings) ** 0.33333333333
 
-        self.linear_transform = make_affine_matrix(rotations, shears, scalings, self.device)
+        self.linear_transform = make_affine_matrix(
+            rotations, shears, scalings, self.device
+        )
         self.scale_distance = scaling_factor_distances
-
 
     def apply_grid_sample(self, image, grid, **kwargs):
         """If the grid is None just apply the spatial cropper"""
@@ -530,7 +538,9 @@ class Synthesizer(torch.nn.Module):
         if self.do_task["photo_mode"]:
             F[1] = 0
 
-        if self.has_surfaces and self.config.surfaces.resolution is not None:  # NOTE: slow
+        if (
+            self.has_surfaces and self.config.surfaces.resolution is not None
+        ):  # NOTE: slow
             steplength = 1.0 / (2.0**cfg.n_steps_svf_integration)
             Fsvf = F * steplength
             for _ in torch.arange(cfg.n_steps_svf_integration):
@@ -552,19 +562,21 @@ class Synthesizer(torch.nn.Module):
         self.nonlinear_transform_fwd = F
         self.nonlinear_transform_bwd = Fneg
 
-    def adjust_roi_center(self, shape):
+    def adjust_roi_center(self, shape: torch.Tensor):
         """Adjust ROI center such that the spatial cropping results in
         the expected size. This might not happen if the slices extend
         beyond the image size (e.g., less than zero, larger than 256)
         in which case we will move the ROI center."""
-        shape = torch.tensor(shape)
+        # shape = torch.tensor(shape)
 
-        halfsize = 0.5 *self.roi_size
+        halfsize = 0.5 * self.roi_size
         roi_start = (self.roi_center - halfsize).to(self.roi_center.dtype)
         roi_end = (self.roi_center + halfsize).to(self.roi_center.dtype)
 
         # we could just set roi as image center and size as image size
-        assert torch.all(roi_end - roi_start <= shape), f"ROI ({roi_end - roi_start}) is larger than image ({shape})"
+        assert torch.all(
+            roi_end - roi_start <= shape
+        ), f"ROI ({roi_end - roi_start}) is larger than image ({shape})"
 
         move_roi_center = torch.zeros_like(self.roi_center)
 
@@ -579,7 +591,6 @@ class Synthesizer(torch.nn.Module):
         self.roi_center += move_roi_center
 
     def construct_deformed_grid(self, shape, center_coords):
-
         if not self.do_task["linear_deform"] or not self.do_task["nonlinear_deform"]:
             self.deformed_grid = None
             # make a spatial cropper that includes the to-be-sampled voxels
@@ -613,13 +624,14 @@ class Synthesizer(torch.nn.Module):
         margin_min = deformed_grid.amin((0, 1, 2)).floor()
         margin_max = deformed_grid.amax((0, 1, 2)).ceil() + 1
 
-        self.roi_size = self.ensure_divisible_size(margin_max-margin_min)
+        self.roi_size = self.ensure_divisible_size(margin_max - margin_min)
         self.roi_center = self.center_from_shape(self.roi_size)
         self.adjust_roi_center(shape)
 
         # make a spatial cropper that includes the to-be-sampled voxels
         self.spatial_crop = monai.transforms.SpatialCrop(
-            roi_center=self.roi_center, roi_size=self.roi_size,
+            roi_center=self.roi_center,
+            roi_size=self.roi_size,
         )
         # self.spatial_crop = monai.transforms.SpatialCrop(
         #     roi_start=margin_min, roi_end=margin_max
@@ -641,7 +653,6 @@ class Synthesizer(torch.nn.Module):
         images: dict,
     ):
         # assert "generation" in images, "generation image is needed for synthesis"
-
 
         # if (k := "norm") in images:
         #     # Normalize values
@@ -737,24 +748,33 @@ class Synthesizer(torch.nn.Module):
         return v
 
     def transform_surfaces(self, surfaces, deformed_origin):
-        if self.has_surfaces:
-            inv_lin_deform = (
-                torch.linalg.inv(self.linear_transform)
-                if self.linear_transform is not None
-                else None
-            )
-            surfaces = {
-                h: {
-                    s: self.transform_surface_(
-                        surfaces[h][s],
-                        deformed_origin,
-                        inv_lin_deform,
-                    )
-                    for s in surfaces[h]
-                }
-                for h in surfaces
+        if not self.has_surfaces:
+            return
+
+        inv_lin_deform = (
+            torch.linalg.inv(self.linear_transform)
+            if self.linear_transform is not None
+            else None
+        )
+
+        surfaces = {
+            h: {
+                s: self.transform_surface_(
+                    surfaces[h][s],
+                    deformed_origin,
+                    inv_lin_deform,
+                )
+                for s in surfs
             }
-            # for s in {"white", "pial"}: # if faces included
+            if isinstance(surfs, dict)
+            else self.transform_surface_(
+                surfs,
+                deformed_origin,
+                inv_lin_deform,
+            )
+            for h, surfs in surfaces.items()
+        }
+
         return surfaces
 
     def generate_gaussians(self):
@@ -797,7 +817,6 @@ class Synthesizer(torch.nn.Module):
 
         return SYN
 
-
     def transform_images(self, images):
         deformed = {}
         for name, img in images.items():
@@ -830,7 +849,7 @@ class Synthesizer(torch.nn.Module):
 
         return deformed
 
-    def post_process_images_(self, images):
+    def postprocess_images_(self, images):
         """In-place"""
         if "segmentation" in images:
             images["segmentation"] = self.as_onehot(images["segmentation"])
@@ -844,9 +863,10 @@ class Synthesizer(torch.nn.Module):
 
         return images
 
-
     def synthesize_image(
-        self, gen_label: torch.Tensor, input_resolution: torch.Tensor,
+        self,
+        gen_label: torch.Tensor,
+        input_resolution: torch.Tensor,
     ):
         if not self.do_task["intensity"]:
             return {}
@@ -872,8 +892,7 @@ class Synthesizer(torch.nn.Module):
             synth, input_resolution, target_resolution, thickness
         )
 
-        return dict(biasfield = biasfield, synth = synth)
-
+        return dict(biasfield=biasfield, synth=synth)
 
     def flip_images(self, deformed):
         if not self.do_task["flip"]:
@@ -889,27 +908,26 @@ class Synthesizer(torch.nn.Module):
         return deformed
 
     def flip_surfaces(self, surfaces, shape):
-        # surfaces
         if not self.has_surfaces or not self.do_task["flip"]:
             return surfaces
 
-        width = shape[1]  # assumes C,W,H,D
-        # surfs = {"white", "pial"}
-        for hemi, surfs in surfaces.items():  # hemisphere dicts
-            # for s in surfs:
-            # flip coordinates
-            for s in surfs:
-                surfaces[hemi][s][:, 0] *= -1.0
-                surfaces[hemi][s][:, 0] += width - 1.0
+        def _flip_surface_coords(s, width):
+            s[:, 0] *= -1.0
+            s[:, 0] += width - 1.0
 
-            # flip vertex ordering to preserve normal direction
-            # hv["faces"] = hv["faces"][:, (0, 2, 1)]
+        width = shape[1]  # assumes C,W,H,D
+        for hemi, surfs in surfaces.items():
+            if isinstance(surfs, dict):
+                for s in surfs:
+                    _flip_surface_coords(surfaces[hemi][s], width)
+            else:
+                _flip_surface_coords(surfs, width)
 
         # NOTE
         # swap label (e.g., lh -> rh) when flipping image. Not sure if
         # this is the best thing to do but at least ensures some kind
         # of consistency: when flipping then faces need to be reordered
-        # which if also the case when for rh compared to lh.
+        # which is also the case for rh compared to lh.
         return {HEMI_FLIP[h]: v for h, v in surfaces.items()}
 
     def synthesize_bias_field(self):

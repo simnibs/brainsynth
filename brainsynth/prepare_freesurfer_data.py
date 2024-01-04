@@ -22,9 +22,7 @@ import surfa
 
 from brainsynth import root_dir
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
-from brainsynth.constants import filenames
-
-from brainsynth.constants import filenames
+from brainsynth.constants import constants, filenames
 
 
 """
@@ -107,6 +105,22 @@ def prepare_freesurfer_data(
     # folding_atlas = Path(folding_atlas)
 
     sphere_reg_target = root_dir / "resources" / "sphere-reg.srf"
+    white_lh_template = surfa.load_mesh(str(root_dir / "resources" / "cortex-int-lh.srf"))
+    l2r = surfa.load_affine(str(root_dir / "resources" / "left-to-right.lta"))
+
+    template_mesh = dict(lh=white_lh_template, rh=white_lh_template.transform(l2r))
+
+    # MNI305 to subject mapping
+
+    # We need this transformation to convert the template mesh to subject space
+
+    # This is a voxel to voxel transformation between nu.mgz and mni305.cor.mgz
+    # (or whatever it says in the lta file)
+    tal = surfa.load_affine(str(mri_dir / "transforms" / "talairach.lta"))
+    # Convert to world-to-world trans instead, i.e.,
+    #   tal[ras] = vox2ras[target] @ tal[voxel] @ ras2vox[source]
+    # and invert so we get mni305[RAS] -> subject[RAS]
+    tal = tal.convert(space="world").inv()
 
     # Get norm.mgz, nu.mgz, aparc+aseg.mgz
     norm = nib.load(mri_dir / "norm.mgz")
@@ -170,6 +184,11 @@ def prepare_freesurfer_data(
         # the below is also valid as norm.affine[:3,:3] = I
         # s.vertices += cras - norm.affine[:3, 3]
 
+    # Convert template surfaces from surface RAS to voxel space
+    for k,v in template_mesh.items():
+        template_mesh[k] = v.transform(tal)
+    template_mesh = {k: Surface(apply_affine(inv_affine, v.vertices + cras), v.faces) for k,v in template_mesh.items()}
+
     print("Computing distance maps : bag")
     # NOTE Here we use an isotropic structuring element!
     se = scipy.ndimage.generate_binary_structure(3, 3)
@@ -229,8 +248,6 @@ def prepare_freesurfer_data(
 
     print("Writing surfaces")
 
-    hemispheres = {"lh", "rh"}
-
     # @staticmethod
     # def n_vertices_to_n_faces(nv):
     #     return 2 * nv - 4
@@ -247,15 +264,20 @@ def prepare_freesurfer_data(
         """Estimate number of vertices at the ith level of the template surface."""
         return (base_nf * 4**i + 4) // 2
 
-    for i in range(7):
+    for i in constants.SURFACE_RESOLUTIONS:
         nv = n_vertices_at_level(i)
-        for h in hemispheres:
+        for h in constants.HEMISPHERES:
+            # torch.save(
+            #     dict(
+            #         white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
+            #         pial=torch.tensor(surfaces[h, "pial"].vertices[:nv]),
+            #     ),
+            #     out_dir / filenames.surfaces[i, h],
+            # )
+
             torch.save(
-                dict(
-                    white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
-                    pial=torch.tensor(surfaces[h, "pial"].vertices[:nv]),
-                ),
-                out_dir / filenames.surfaces[i, h],
+                torch.tensor(template_mesh[h].vertices[:nv].astype(np.float32)),
+                out_dir / filenames.surface_templates[i, h]
             )
 
     print("Writing auxilliary information")
@@ -266,7 +288,7 @@ def prepare_freesurfer_data(
                 torch.from_numpy(surfaces[h, "pial"].vertices).amax(0).ceil().int() + 1,
             ),
         )
-        for h in hemispheres
+        for h in constants.HEMISPHERES
     }
     both = torch.stack([v for v in bounding_boxes.values()])
     bounding_boxes["brain"] = torch.stack((both[:, 0].amin(0), both[:, 1].amax(0)))
@@ -277,11 +299,11 @@ def prepare_freesurfer_data(
     )
     torch.save(
         dict(
-            # affine=torch.from_numpy(affine),
-            resolution=torch.from_numpy(affine[:3, :3]).norm(dim=0).float(),
-            shape=torch.tensor(norm_dat.shape),
-            bbox=bounding_boxes,
-            labels=labels,
+            affine = torch.from_numpy(affine),
+            resolution = torch.from_numpy(affine[:3, :3]).norm(dim=0).float(),
+            shape = torch.tensor(norm_dat.shape),
+            bbox = bounding_boxes,
+            labels = labels,
         ),
         out_dir / filenames.info,
     )
@@ -328,7 +350,7 @@ def process_additional_images(
                     check=True,
                 )
                 kwargs = dict(
-                    reg=tmp_reg, reference=reference, input=image, output=tmp_mgz
+                    reg=tmp_reg, ref=reference, input=image, output=tmp_mgz
                 )
             else:
                 kwargs = dict(input=image, output=tmp_mgz)
@@ -584,7 +606,6 @@ def refine_generation_labels_(gen_labels, seg_labels, dist_maps):
 
 def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_threads):
     """Resample white and pial surfaces from freesurfer to topofit template."""
-    hemispheres = {"lh", "rh"}
     surfaces = {"white", "pial"}
 
     # Generate sphere.reg to TopoFit template
@@ -592,7 +613,7 @@ def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_thr
     flip_x = np.array([-1, 1, 1])
 
     sphere_reg = {}
-    for h in hemispheres:
+    for h in constants.HEMISPHERES:
         sphere = surf_dir / f"{h}.sphere"
         sphere_reg[h] = out_dir / f"{h}.sphere.reg"
         cmd = f"mris_register -curv {{sphere}} {folding_atlas} {sphere_reg[h]} -threads {n_threads}"
@@ -632,7 +653,7 @@ def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_thr
     target_reg = surfa.load_mesh(str(sphere_reg_target))
 
     surf_buffer = {}
-    for h in hemispheres:
+    for h in constants.HEMISPHERES:
         source_reg = surfa.load_mesh(str(sphere_reg[h]))
         for s in surfaces:
             surf_in = surf_dir / f"{h}.{s}"
