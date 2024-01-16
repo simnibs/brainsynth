@@ -25,19 +25,12 @@ from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.constants import constants, filenames
 
 
-"""
-
-subject_dir = "/mrhome/jesperdn/INN_JESPER/projects/anateeg/freesurfer/sub-01/"
-out_dir = "/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new"
-n_threads = 2
-force = False
-
-"""
-
-
 def prepare_freesurfer_data(
     subject_dir: Path | str,
     out_dir: Path | str,
+    write_brain_distance_image: bool = False,
+    write_bag_image: bool = False,
+    remove_synthseg_image: bool = True,
     additional_images: None | dict = None,
     coreg_additional_images: bool = True,
     n_threads: int = 2,
@@ -45,20 +38,22 @@ def prepare_freesurfer_data(
 ) -> None:
     """Prepare data for the synthesizer. This will produce the following files
 
-    synthseg.nii            result of running SynthSeg on nu.mgz.
-    t1.nii                  normalized norm.mgz with modified skull-stripping.
-    segmentation.nii        segmentation labels.
-    generation.nii          generation labels (includes extracerebral tissues
+        t1.nii              normalized norm.mgz with modified skull-stripping.
+        segmentation.nii    segmentation labels.
+        generation.nii      generation labels (includes extracerebral tissues
                             classified using k-means).
-    distances.nii           Voxel-wise distances to white and pial surfaces.
-    bag.nii
+        synthseg.nii        result of running SynthSeg on nu.mgz.
 
-    surface.{res}.{hemi}.pt Cortical surfaces resampled to TopoFit template.
+        surface.{res}.{hemi}.pt
+                            Cortical surfaces resampled to TopoFit template.
                             Note that the surfaces are saved in (scanner) RAS
                             and *not* surface RAS.
 
-    Adapted from Eugenio's original MATLAB script by Jesper D. Nielsen with
-    some slight modifications.
+    and optionally
+
+        distances.nii       Voxel-wise distances to white and pial surfaces.
+        bag.nii
+
 
     Parameters
     ----------
@@ -78,7 +73,12 @@ def prepare_freesurfer_data(
         register the surface of the subject to the TopoFit template surface.
         (In the deepsurfer package this is called `folding-atlas.tif`.)
     n_threads : int, optional
-        Number of threads to use, by default 2
+        Number of threads to use, by default 2.
+
+    Notes
+    -----
+    Adapted from Eugenio's original MATLAB script by Jesper Duemose Nielsen
+    with some modifications.
     """
     LABEL_DTYPE = np.uint16
     IMAGE_DTYPE = np.float32
@@ -177,7 +177,7 @@ def prepare_freesurfer_data(
             surfaces[k] = Surface(vertex.astype(np.float32), faces.astype(np.int32))
 
     # Convert surfaces from surface RAS to voxel space
-    inv_affine = np.linalg.inv(norm.affine)
+    inv_affine = np.linalg.inv(norm.affine).astype(np.float32)
     for k, v in surfaces.items():
         surfaces[k].vertices = apply_affine(inv_affine, v.vertices + cras)
 
@@ -187,9 +187,11 @@ def prepare_freesurfer_data(
     # Convert template surfaces from surface RAS to voxel space
     for k,v in template_mesh.items():
         template_mesh[k] = v.transform(tal)
-    template_mesh = {k: Surface(apply_affine(inv_affine, v.vertices + cras), v.faces) for k,v in template_mesh.items()}
+    template_mesh = {
+        k: Surface(apply_affine(inv_affine, v.vertices.astype(np.float32) + cras), v.faces) for k,v in template_mesh.items()
+    }
 
-    print("Computing distance maps : bag")
+    print("Computing distance map  : bag")
     # NOTE Here we use an isotropic structuring element!
     se = scipy.ndimage.generate_binary_structure(3, 3)
     bag_mask = scipy.ndimage.binary_fill_holes(
@@ -217,25 +219,36 @@ def prepare_freesurfer_data(
     # Write
 
     keys = [("lh", "white"), ("lh", "pial"), ("rh", "white"), ("rh", "pial")]
-    affine = norm.affine
+    affine = norm.affine.astype(np.float32)
 
     print("Writing volumes")
 
+    print(filenames.default_images.norm)
     nib.Nifti1Image(norm_dat.astype(IMAGE_DTYPE), affine).to_filename(
         out_dir / filenames.default_images.norm
     )
+
+    print(filenames.default_images.generation)
     nib.Nifti1Image(gen_labels.astype(LABEL_DTYPE), affine).to_filename(
         out_dir / filenames.default_images.generation
     )
+
+    print(filenames.default_images.segmentation)
     nib.Nifti1Image(seg_labels, affine, dtype=LABEL_DTYPE).to_filename(
         out_dir / filenames.default_images.segmentation
     )
-    nib.Nifti1Image(bag.astype(IMAGE_DTYPE), affine).to_filename(
-        out_dir / filenames.default_images.bag
-    )
-    nib.Nifti1Image(
-        np.stack([dist_maps[k].astype(IMAGE_DTYPE) for k in keys], -1), affine
-    ).to_filename(out_dir / filenames.default_images.distances)
+
+    if write_bag_image:
+        print(filenames.default_images.bag)
+        nib.Nifti1Image(bag.astype(IMAGE_DTYPE), affine).to_filename(
+            out_dir / filenames.default_images.bag
+        )
+
+    if write_brain_distance_image:
+        print(filenames.default_images.distances)
+        nib.Nifti1Image(
+            np.stack([dist_maps[k].astype(IMAGE_DTYPE) for k in keys], -1), affine
+        ).to_filename(out_dir / filenames.default_images.distances)
 
     process_additional_images(
         subject_dir,
@@ -267,16 +280,15 @@ def prepare_freesurfer_data(
     for i in constants.SURFACE_RESOLUTIONS:
         nv = n_vertices_at_level(i)
         for h in constants.HEMISPHERES:
-            # torch.save(
-            #     dict(
-            #         white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
-            #         pial=torch.tensor(surfaces[h, "pial"].vertices[:nv]),
-            #     ),
-            #     out_dir / filenames.surfaces[i, h],
-            # )
-
             torch.save(
-                torch.tensor(template_mesh[h].vertices[:nv].astype(np.float32)),
+                dict(
+                    white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
+                    pial=torch.tensor(surfaces[h, "pial"].vertices[:nv]),
+                ),
+                out_dir / filenames.surfaces[i, h],
+            )
+            torch.save(
+                torch.tensor(template_mesh[h].vertices[:nv]),
                 out_dir / filenames.surface_templates[i, h]
             )
 
@@ -294,20 +306,24 @@ def prepare_freesurfer_data(
     bounding_boxes["brain"] = torch.stack((both[:, 0].amin(0), both[:, 1].amax(0)))
 
     labels = dict(
-        generation=torch.tensor(np.unique(gen_labels)),
-        segmentation=torch.tensor(np.unique(seg_labels)),
+        # apply round as generation may include partial volume labels
+        generation=torch.tensor(np.unique(np.round(gen_labels)).astype(np.int32)),
+        segmentation=torch.tensor(np.unique(seg_labels).astype(np.int32)),
     )
     torch.save(
         dict(
             affine = torch.from_numpy(affine),
-            resolution = torch.from_numpy(affine[:3, :3]).norm(dim=0).float(),
-            shape = torch.tensor(norm_dat.shape),
+            resolution = torch.from_numpy(affine[:3, :3]).norm(dim=0),
+            shape = torch.tensor(norm_dat.shape).to(torch.int),
             bbox = bounding_boxes,
             labels = labels,
         ),
         out_dir / filenames.info,
     )
 
+    if remove_synthseg_image:
+        print(f"Removing {fname_synthseg.name}")
+        fname_synthseg.unlink()
 
 @dataclass
 class Surface:
