@@ -4,88 +4,20 @@ import torch
 import monai
 
 from brainsynth.config.utilities import load_config
-from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler
-
 from brainsynth.constants import constants
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.spatial_utils import get_roi_center_size
-from brainsynth.transforms import Reindex
+from brainsynth.transforms import AsDiscreteWithReindex
+
+from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler
 
 HEMI_FLIP = dict(zip(constants.HEMISPHERES, constants.HEMISPHERES[::-1]))
-
-"""
-# example
-
-from pathlib import Path
-from brainsynth.config.utilities import load_config
-from brainsynth import root_dir
-
-base_dir = Path("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new")
-subjects = ["sub-01"]
-subject_dir = base_dir / subjects[0]
-device = "cpu"
-
-config = load_config(root_dir / "config" / "synthesizer.yaml")
-
-dataset = CroppedDataset(
-    base_dir,
-    subjects,
-    images = ("generation", "t1", "segmentation"),
-    surface_resolution = 6,
-    surface_hemi = "lh",
-    fov_center = "lh",
-    fov_size = "lh", # (120,200,120),
-    fov_pad = 5,
-    images_as_one_hot = dict(segmentation=config["labeling"]["synth"]["incl_csf"]),
-)
-
-# no cropping
-dataset = CroppedDataset(
-    base_dir,
-    subjects,
-    default_images = ("generation", "norm", "segmentation"),
-    # surface_resolution = 6,
-    surface_hemi = "random",
-)
-images, surfaces, info = next(iter(dataset))
-print(surfaces)
-
-self = Synthesizer(device=device)
-data = self(images, surfaces, info)
-
-import numpy as np
-import nibabel as nib
-import matplotlib.pyplot as plt
-
-plt.imshow(data["synth"][0,0,:,100])
-
-nib.Nifti1Image(data["t1"].squeeze().numpy(), np.identity(4)).to_filename("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_t1.nii")
-nib.Nifti1Image(data["synth"].squeeze().numpy(), np.identity(4)).to_filename("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_synth.nii")
-nib.Nifti1Image(data["label"].squeeze().numpy(), np.identity(4)).to_filename("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_label.nii")
-
-v,lhf = nib.freesurfer.read_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/lh.white")
-v,rhf = nib.freesurfer.read_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/rh.white")
-
-
-
-nib.freesurfer.write_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_rh.white",
-    data["surfaces"]["rh"]["white"].squeeze().numpy(), rhf)
-nib.freesurfer.write_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_rh.pial",
-    data["surfaces"]["rh"]["pial"].squeeze().numpy(), rhf)
-
-
-nib.freesurfer.write_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_rh.white",
-    data["surfaces"]["lh"]["white"].squeeze().numpy(), lhf)
-nib.freesurfer.write_geometry("/mrhome/jesperdn/nobackup/supersynth_data_gen/generator/deformed/new/sub-01/test_rh.pial",
-    data["surfaces"]["lh"]["pial"].squeeze().numpy(), lhf)
-
-
-"""
 
 
 class Synthesizer(torch.nn.Module):
     def __init__(self, config=None, ensure_divisible_by=None, device="cpu"):
         """Dataset synthesizer.
+
 
         Parameters
         ----------
@@ -198,13 +130,8 @@ class Synthesizer(torch.nn.Module):
             getattr(constants.labeling_scheme, self.config.labeling_scheme)
         )
         n_seg_labels = len(seg_labels)
-        self.as_onehot = monai.transforms.Compose(
-            [
-                monai.transforms.EnsureType(dtype=torch.int),
-                Reindex(seg_labels),
-                monai.transforms.AsDiscrete(to_onehot=n_seg_labels),
-            ]
-        )
+        self.as_onehot = AsDiscreteWithReindex(seg_labels)
+
         # n_neutral_labels = self.config.labeling.synth.incl_csf_n_neutral_labels
         n_neutral_labels = getattr(
             constants.n_neutral_labels, self.config.labeling_scheme
@@ -321,23 +248,26 @@ class Synthesizer(torch.nn.Module):
         )
 
     def remove_batch_dim_(self, data):
-        # Remove batch dimension! We add it again later...
         for k, v in data.items():
-            if v.is_batch:
-                data[k] = v[0]
+            if isinstance(v, monai.data.MetaTensor):
+                # assert v.shape[0] == 1, "Only a batch size of 1 is supported"
+                data[k] = v[0] if v.is_batch else v
+            else:
+                self.remove_batch_dim_(data[k])
 
     def add_batch_dim_(self, data):
-        # ADD BACK BATCH DIM !
         for k, v in data.items():
-            if not v.is_batch:
-                data[k] = v[None]
+            if isinstance(v, monai.data.MetaTensor):
+                data[k] = v if v.is_batch else v[None]
+            else:
+                self.add_batch_dim_(data[k])
 
-    def add_batch_dim_surface(self, data):
-        # ADD BACK BATCH DIM !
-        for hemi, vv in data.items():
-            for surf, vvv in vv.items():
-                # if surf != "faces":
-                data[hemi][surf] = vvv[None]
+    # def add_batch_dim_surface(self, data):
+    #     # ADD BACK BATCH DIM !
+    #     for hemi, vv in data.items():
+    #         for surf, vvv in vv.items():
+    #             # if surf != "faces":
+    #             data[hemi][surf] = vvv[None]
 
     def initialize_state(self):
         self.do_task = dict(
@@ -354,6 +284,26 @@ class Synthesizer(torch.nn.Module):
         self.set_photo_mode_spacing()
 
     def forward(self, images, true_surfs, init_surfs, info):
+        """
+
+        Only batch_size = 1 is supported!
+
+        Parameters
+        ----------
+        images : _type_
+            _description_
+        true_surfs : _type_
+            _description_
+        init_surfs : _type_
+            _description_
+        info : _type_
+            _description_
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
         # template_surface = template_surface or {}
 
         with torch.device(self.device):
@@ -367,17 +317,10 @@ class Synthesizer(torch.nn.Module):
                 else:
                     info[k] = v.squeeze()
 
-            # remove batch dim from surfaces...
-            for hemi, surfs in true_surfs.items():
-                for surf, t in surfs.items():
-                    true_surfs[hemi][surf] = t.squeeze(0)
-
-            # and initial surfaces
-            for hemi, surf in init_surfs.items():
-                init_surfs[hemi] = surf.squeeze(0)
-
             # HANDLE THIS INTERNALLY INSTEAD
             self.remove_batch_dim_(images)
+            self.remove_batch_dim_(true_surfs)
+            self.remove_batch_dim_(init_surfs)
 
             self.initialize_state()
 
@@ -421,8 +364,11 @@ class Synthesizer(torch.nn.Module):
             init_surfs = self.flip_surfaces(init_surfs, out_shape)
 
             # HANDLE THIS INTERNALLY INSTEAD
+
+            # only add if they were removed...
+
             self.add_batch_dim_(deformed)
-            self.add_batch_dim_surface(true_surfs)
+            self.add_batch_dim_(true_surfs)
             self.add_batch_dim_(init_surfs)
 
             return deformed, true_surfs, init_surfs
@@ -749,7 +695,7 @@ class Synthesizer(torch.nn.Module):
 
     def transform_surfaces(self, surfaces, deformed_origin):
         if not self.has_surfaces:
-            return
+            return {}
 
         inv_lin_deform = (
             torch.linalg.inv(self.linear_transform)
