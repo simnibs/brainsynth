@@ -1,10 +1,16 @@
 import torch
 
-def image_center_from_shape(shape):
-    return (shape-1) / 2
+def image_center_from_shape(shape: torch.Tensor):
+    return (shape - 1) / 2
 
 
-def get_roi_center_size(fov_center, fov_size, fov_pad, bbox, shape):
+def get_roi_center_size(
+        fov_center: str | torch.Tensor,
+        fov_size: str | torch.Tensor,
+        fov_pad: float | torch.Tensor,
+        bbox: dict[str, torch.Tensor],
+        shape: torch.Tensor,
+    ):
     """
 
 
@@ -17,8 +23,10 @@ def get_roi_center_size(fov_center, fov_size, fov_pad, bbox, shape):
             roi_center = image_center_from_shape(shape)
         case "brain" | "lh" | "rh":
             roi_center = bbox[fov_center].float().mean(0).round().int()
-        case _:
+        case torch.Tensor():
             roi_center = fov_center
+        case _:
+            raise ValueError()
 
     match fov_size:
         case "image":
@@ -26,8 +34,10 @@ def get_roi_center_size(fov_center, fov_size, fov_pad, bbox, shape):
         case "brain" | "lh" | "rh":
             b = bbox[fov_size]
             roi_size = b[1] - b[0]
-        case _:
+        case torch.Tensor():
             roi_size = fov_size
+        case _:
+            raise ValueError()
 
     # if fov_center == "brain":
     #     # roi_center = torch.stack([v for v in bbox.values()]).float().mean((0,1)).round().int()
