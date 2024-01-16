@@ -16,7 +16,7 @@ fov:
 
   # CURRENTLY SIZE HAS TO BE AN ARRAY!! AND PAD IS IGNORED...
   center: random_hemi     # brain, image, lh, rh, random, random_hemi, [1,2,3]
-  size: [160, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
+  size: [192, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
 
@@ -46,7 +46,7 @@ deformation:
   # deform_one_hots: False
 
 flip: # LR flip
-  probability: 0.5
+  probability: 0.0 # 0.5
 
 # Intensity profile of the synthesized image
 intensity:
