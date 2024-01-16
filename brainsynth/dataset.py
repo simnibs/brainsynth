@@ -4,7 +4,7 @@ import monai
 import numpy as np
 import torch
 
-from brainsynth.transforms import Reindex
+from brainsynth.transforms import AsDiscreteWithReindex
 from brainsynth.spatial_utils import get_roi_center_size
 from brainsynth.constants import constants, filenames
 
@@ -326,16 +326,17 @@ class CroppedDataset(torch.utils.data.Dataset):
         self.load_image = monai.transforms.LoadImage(
             reader="NibabelReader", ensure_channel_first=True
         )
-        self.as_onehot = {
-            img: monai.transforms.Compose(
-                [
-                    monai.transforms.EnsureType(dtype=torch.int),
-                    Reindex(torch.IntTensor(labels)),
-                    monai.transforms.AsDiscrete(to_onehot=len(labels)),
-                ]
-            )
-            for img, labels in onehot_encoding.items()
-        }
+        # self.as_onehot = {
+        #     img: monai.transforms.Compose(
+        #         [
+        #             monai.transforms.EnsureType(dtype=torch.int),
+        #             Reindex(torch.IntTensor(labels)),
+        #             monai.transforms.AsDiscrete(to_onehot=len(labels)),
+        #         ]
+        #     )
+        #     for img, labels in onehot_encoding.items()
+        # }
+        self.as_onehot = {img: AsDiscreteWithReindex(labels) for img, labels in onehot_encoding.items()}
 
         if rng_seed is not None:
             torch.random.manual_seed(rng_seed)
