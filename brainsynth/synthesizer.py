@@ -9,8 +9,7 @@ from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.spatial_utils import get_roi_center_size
 from brainsynth.transforms import AsDiscreteWithReindex
 
-from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler
-
+from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler, resolution_sampler_1mm_isotropic
 HEMI_FLIP = dict(zip(constants.HEMISPHERES, constants.HEMISPHERES[::-1]))
 
 
@@ -275,6 +274,7 @@ class Synthesizer(torch.nn.Module):
             exvivo = self.check_prob(self.config.exvivo.probability),
             flip = self.check_prob(self.config.flip.probability),
             intensity = self.check_prob(self.config.intensity.probability),
+            skull_strip = self.check_prob(self.config.intensity.skull_strip.probability),
             linear_deform = self.check_prob(self.config.deformation.linear.probability),
             nonlinear_deform = self.check_prob(
                 self.config.deformation.nonlinear.probability
@@ -283,7 +283,7 @@ class Synthesizer(torch.nn.Module):
         )
         self.set_photo_mode_spacing()
 
-    def forward(self, images, true_surfs, init_surfs, info):
+    def forward(self, images, true_surfs, init_surfs, info, disable_synth=False):
         """
 
         Only batch_size = 1 is supported!
@@ -323,6 +323,9 @@ class Synthesizer(torch.nn.Module):
             self.remove_batch_dim_(init_surfs)
 
             self.initialize_state()
+
+            if disable_synth:
+                self.do_task["intensity"] = False
 
             original_shape = info["shape"]
             self.has_surfaces = len(true_surfs) > 0
@@ -729,22 +732,27 @@ class Synthesizer(torch.nn.Module):
         # n
         cfg = self.config.intensity
         n = 500 + 10
-        mus = cfg.mu_offset + cfg.mu_scale * torch.rand(n)
-        sigmas = cfg.sigma_offset + cfg.sigma_scale * torch.rand(n)
+        mu = cfg.mu_offset + cfg.mu_scale * torch.rand(n)
+        sigma = cfg.sigma_offset + cfg.sigma_scale * torch.rand(n)
 
         # set the background to zero every once in a while (or always in photo mode)
         if self.do_task["photo_mode"] or torch.rand(1) < 0.5:
-            mus[0] = 0
+            mu[0] = 0
 
-        return mus, sigmas
+        return mu, sigma
 
     def synthesize_contrast(self, label):
         Gr = label.round().long()
 
-        mus, sigmas = self.generate_gaussians()
+        mu, sigma = self.generate_gaussians()
+
+        # skull-strip every now and then by relabeling extracerebral tissues to
+        # background
+        if self.do_task["skull_strip"]:
+            Gr[Gr >= 500] = 0
 
         # sample synthetic image from gaussians
-        SYN = mus[Gr] + sigmas[Gr] * torch.randn(Gr.shape)
+        SYN = mu[Gr] + sigma[Gr] * torch.randn(Gr.shape)
 
         if self.config.intensity.partial_volume_effect:
             mask = label != Gr
@@ -752,11 +760,11 @@ class Synthesizer(torch.nn.Module):
             Gv = label[mask]
             isv = torch.zeros(Gv.shape)
             pw = (Gv <= 3) * (3 - Gv)
-            isv += pw * mus[2] + pw * sigmas[2] * torch.randn(Gv.shape)
+            isv += pw * mu[2] + pw * sigma[2] * torch.randn(Gv.shape)
             pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
-            isv += pg * mus[3] + pg * sigmas[3] * torch.randn(Gv.shape)
+            isv += pg * mu[3] + pg * sigma[3] * torch.randn(Gv.shape)
             pcsf = (Gv >= 3) * (Gv - 3)
-            isv += pcsf * mus[4] + pcsf * sigmas[4] * torch.randn(Gv.shape)
+            isv += pcsf * mu[4] + pcsf * sigma[4] * torch.randn(Gv.shape)
             SYN[mask] = isv
 
         SYN[SYN < lut.Unknown] = lut.Unknown
@@ -817,8 +825,6 @@ class Synthesizer(torch.nn.Module):
         if not self.do_task["intensity"]:
             return {}
 
-        target_resolution, thickness = self.random_sampler(input_resolution)
-
         # Generate (log-transformed) bias field
 
         biasfield = self.synthesize_bias_field()
@@ -834,9 +840,7 @@ class Synthesizer(torch.nn.Module):
         # deformed["synth_clean"] = deformed["synth"].clone().detach()
         synth = self.gamma_transform(synth)
         synth = self.add_bias_field(synth, biasfield)
-        synth = self.simulate_resolution(
-            synth, input_resolution, target_resolution, thickness
-        )
+        synth = self.simulate_resolution(synth, input_resolution)
 
         return dict(biasfield=biasfield, synth=synth)
 
@@ -902,60 +906,48 @@ class Synthesizer(torch.nn.Module):
         # SYN_gamma = factor * (image / factor) ** gamma
         return image * bias_field.exp()
 
-    def simulate_resolution(
-        self, image, input_resolution, target_resolution, thickness
-    ):
+    def simulate_resolution(self, image, input_resolution):
         """Simulate a"""
 
-        # gaussian smooth
-
-        # downsample
-
-        # add gauss noise
-        # threshold at > 0
-        # upsample
-        # normalize by dividing by max intensity
+        target_resolution, thickness = self.random_sampler(input_resolution)
 
         # Apply resolution and slice thickness blurring if different from the
         # target resolution
-        stds = (
-            (0.85 + 0.3 * torch.rand(1))
-            * torch.log(torch.tensor([5]))
-            / torch.pi
-            * thickness
-            / input_resolution
-        )
-        # no blur if thickness is equal to the resolution of the training data
-        stds[thickness <= input_resolution] = 0.0
+        if input_resolution.equal(target_resolution):
+            SYN_small = image
+        else:
+            stds = (
+                (0.85 + 0.3 * torch.rand(1.0))
+                * torch.log(torch.tensor([5.0]))
+                / torch.pi
+                * thickness
+                / input_resolution
+            )
+            # no blur if thickness is equal to the resolution of the training
+            # data
+            stds[thickness <= input_resolution] = 0.0
 
-        # SYN_blur = gaussian_blur_3d(image, stds, self.device)
+            SYN_blurred = monai.transforms.GaussianSmooth(stds)(image)
 
-        # self.gaussian_smooth = monai.transforms.GaussianSmooth(stds)
-        SYN_blur = monai.transforms.GaussianSmooth(stds)(image)
+            new_size = (self.fov_size * input_resolution / target_resolution).to(torch.int)
 
-        # DOWNSAMPLE START >>>
+            factors = new_size / self.fov_size
+            delta = (1.0 - factors) / (2.0 * factors)
+            hv = tuple(
+                torch.arange(d, d + ns / f, 1 / f)[:ns]
+                for d, ns, f in zip(delta, new_size, factors)
+            )
+            small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
 
-        new_size = (self.fov_size * input_resolution / target_resolution).to(torch.int)
-
-        factors = new_size / self.fov_size
-        delta = (1.0 - factors) / (2.0 * factors)
-        hv = tuple(
-            torch.arange(d, d + ns / f, 1 / f)[:ns]
-            for d, ns, f in zip(delta, new_size, factors)
-        )
-        small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
-
-        # the downsampled synthetic image
-        SYN_small = self.apply_grid_sample(SYN_blur, small_grid)
-
-        # DOWNSAMPLE END <<<
+            # the downsampled synthetic image
+            SYN_small = self.apply_grid_sample(SYN_blurred, small_grid)
 
         # noise_std = intensity["noise_std_min"] + (
         #     intensity["noise_std_max"] - intensity["noise_std_min"]
         # ) * torch.rand(1)
         # SYN_noisy = SYN_small + noise_std * torch.randn(SYN_small.shape)
-        SYN_noisy = self.rand_gauss_noise(SYN_small)
 
+        SYN_noisy = self.rand_gauss_noise(SYN_small)
         SYN_noisy = self.eliminate_negative_values(SYN_noisy)
         SYN_resized = self.resize_to_fov(SYN_noisy)
         SYN_final = self.scale_intensity(SYN_resized)
@@ -967,5 +959,7 @@ class Synthesizer(torch.nn.Module):
             out_res = torch.tensor([in_res[0], self.spacing, in_res[2]])
             thickness = torch.tensor([in_res[0], 0.0001, in_res[2]])
         else:
-            out_res, thickness = resolution_sampler(self.device)
+            out_res = in_res.clone()
+            thickness = in_res.clone()
+            # out_res, thickness = resolution_sampler_1mm_isotropic(self.device)
         return out_res, thickness
