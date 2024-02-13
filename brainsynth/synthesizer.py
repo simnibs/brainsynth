@@ -487,9 +487,7 @@ class Synthesizer(torch.nn.Module):
         if self.do_task["photo_mode"]:
             F[1] = 0
 
-        if (
-            self.has_surfaces and self.config.surfaces.resolution is not None
-        ):  # NOTE: slow
+        if self.has_surfaces:  # this is slow
             steplength = 1.0 / (2.0**cfg.n_steps_svf_integration)
             Fsvf = F * steplength
             for _ in torch.arange(cfg.n_steps_svf_integration):
