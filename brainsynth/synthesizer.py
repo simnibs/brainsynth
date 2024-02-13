@@ -540,7 +540,7 @@ class Synthesizer(torch.nn.Module):
         self.roi_center += move_roi_center
 
     def construct_deformed_grid(self, shape, center_coords):
-        if not self.do_task["linear_deform"] or not self.do_task["nonlinear_deform"]:
+        if not self.do_task["linear_deform"] and not self.do_task["nonlinear_deform"]:
             self.deformed_grid = None
             # make a spatial cropper that includes the to-be-sampled voxels
             self.roi_center = center_coords
