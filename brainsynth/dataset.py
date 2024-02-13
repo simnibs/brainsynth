@@ -50,7 +50,7 @@ def get_dataloader_concatenated_and_split(
     datasets = [
         CroppedDataset(
             base_dir / ds,
-            load_dataset_subjects(base_dir, ds),
+            # load_dataset_subjects(base_dir, ds),
             optional_images=optional_images[ds],
             dataset_id=ds,
             return_dataset_id=True,
@@ -213,6 +213,7 @@ def write_dataset_subjects(data_dir, dataset, exclude=None):
 
 
 def load_dataset_subjects(data_dir, dataset):
+    # return (Path(data_dir) / dataset).glob("*")
     return np.genfromtxt(
         Path(data_dir) / filename_subjects(dataset), dtype="str"
     ).tolist()
@@ -232,7 +233,7 @@ class CroppedDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         dataset_dir: str | Path,
-        subjects: None | list | tuple,
+        subjects: None | list | tuple = None,
         default_images: None | list | tuple = None,
         optional_images: None | list | tuple = None,
         onehot_encoding: None | dict = None,
