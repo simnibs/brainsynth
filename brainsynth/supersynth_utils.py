@@ -19,7 +19,18 @@ def resolution_sampler(device):
         else:  # low-field: isotropic-ish (also good for scouts)
             resolution = 2.0 + 3.0 * torch.rand(3)
             thickness = resolution.clone()
-        return resolution, thickness
+    return resolution, thickness
+
+def resolution_sampler_1mm_isotropic(device):
+    resolution = torch.tensor([1.0, 1.0, 1.0], device=device)
+    thickness = torch.tensor([1.0, 1.0, 1.0], device=device)
+    return resolution, thickness
+
+
+def resolution_sampler_(device):
+    resolution = torch.normal(1, 0.75, size=(3,), device=device).abs().clamp(1, 2)
+    thickness = resolution.clone()
+    return resolution, thickness
 
 
 def make_affine_matrix(rot, shear, scale, device):
