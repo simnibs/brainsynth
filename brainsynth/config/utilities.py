@@ -7,7 +7,12 @@ from brainsynth import root_dir
 from brainsynth.constants import constants
 
 def load_config(filename=None):
-    filename = filename or root_dir / "config" / "synthesizer.yaml"
+    config_dir = root_dir / "config"
+    filename = filename or config_dir / "synthesizer.yaml"
+    filename = Path(filename)
+    if not filename.exists():
+        filename = config_dir / filename
+
     with open(filename, "r") as f:
         config = yaml.load(f, Loader=get_loader())
     return recursive_dict_to_namespace(config)
@@ -20,7 +25,8 @@ def get_loader():
     return loader
 
 def path_constructor(loader, node):
-    """"""
+    """
+    """
     return Path(loader.construct_scalar(node))
 
 def labeling_scheme_constructor(loader, node):
@@ -40,9 +46,7 @@ def recursive_dict_to_namespace(d):
     return namespace
 
 def recursive_namespace_to_dict(ns):
-    d = ns
-    if isinstance(d, SimpleNamespace):
-        d = vars(d)
-        for k,v in d.items():
-            d[k] = recursive_namespace_to_dict(v)
-    return d
+    if isinstance(ns, SimpleNamespace):
+        return {k: recursive_namespace_to_dict(v) for k,v in vars(ns).items()}
+    else:
+        return ns
