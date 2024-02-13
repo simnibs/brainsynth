@@ -1,3 +1,4 @@
+from typing import Any
 import warnings
 
 import torch
@@ -7,27 +8,63 @@ from brainsynth.config.utilities import load_config
 from brainsynth.constants import constants
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.spatial_utils import get_roi_center_size
-from brainsynth.transforms import AsDiscreteWithReindex
+from brainsynth.transforms import AsDiscreteWithReindex, SpatialCrop
 
 from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler, resolution_sampler_1mm_isotropic
 HEMI_FLIP = dict(zip(constants.HEMISPHERES, constants.HEMISPHERES[::-1]))
 
+"""
+
+from brainsynth import Synthesizer
+from brainsynth.dataset import CroppedDataset
+import matplotlib.pyplot as plt
+
+synth = Synthesizer()
+
+ds = CroppedDataset(
+    "/mnt/projects/skull_reco/bjorn/brainsynth_output",
+    default_images=["norm", "segmentation", "generation"],
+    surface_resolution=None
+)
+
+images, surfaces, temp_verts, info = ds[0]
+
+y_true_img, y_true_surf, init_vertices = synth(
+    images, surfaces, temp_verts, info
+)
+if "synth" in y_true_img:
+    i = "synth"
+    fig, ax = plt.subplots(1, 3, figsize=(10,4))
+    ax[0].imshow(y_true_img[i][0,0].numpy()[100]);
+    ax[1].imshow(y_true_img[i][0,0].numpy()[:, 100]);
+    ax[2].imshow(y_true_img[i][0,0].numpy()[..., 100]);
+    fig.show()
+i = "norm"
+fig, ax = plt.subplots(1, 3, figsize=(10,4))
+ax[0].imshow(y_true_img[i][0,0].numpy()[100]);
+ax[1].imshow(y_true_img[i][0,0].numpy()[:, 100]);
+ax[2].imshow(y_true_img[i][0,0].numpy()[..., 100]);
+fig.show()
+
+"""
 
 class Synthesizer(torch.nn.Module):
-    def __init__(self, config=None, ensure_divisible_by=None, device="cpu"):
+    def __init__(self, config=None, device="cpu"):
         """Dataset synthesizer.
 
 
         Parameters
         ----------
         config : dict
+
+
         device : str
         """
         super().__init__()
 
         self.config = config or load_config()
         self.device = device
-        self.fov_size_divisor = ensure_divisible_by
+        # self.fov_size_divisor = ensure_divisible_by
 
         # Map to tensors and device
         match self.config.fov.size:
@@ -145,6 +182,10 @@ class Synthesizer(torch.nn.Module):
         )
 
     def ensure_divisible_size(self, size):
+        """Useful for for example UNets what downsample by a factor two every
+        time. However, it is probably better that the user just sets it
+        correctly to begin with instead...
+        """
         if self.fov_size_divisor is not None:
             min_size = size / self.fov_size_divisor
             if (residual := torch.ceil(min_size) - min_size).any():
@@ -509,53 +550,54 @@ class Synthesizer(torch.nn.Module):
         self.nonlinear_transform_fwd = F
         self.nonlinear_transform_bwd = Fneg
 
-    def adjust_roi_center(self, shape: torch.Tensor):
-        """Adjust ROI center such that the spatial cropping results in
-        the expected size. This might not happen if the slices extend
-        beyond the image size (e.g., less than zero, larger than 256)
-        in which case we will move the ROI center."""
-        # shape = torch.tensor(shape)
+    # def adjust_roi_center(self, shape: torch.Tensor):
+    #     """Adjust ROI center such that the spatial cropping results in
+    #     the expected size. This might not happen if the slices extend
+    #     beyond the image size (e.g., less than zero, larger than 256)
+    #     in which case we will move the ROI center."""
+    #     # shape = torch.tensor(shape)
 
-        halfsize = 0.5 * self.roi_size
-        roi_start = (self.roi_center - halfsize).to(self.roi_center.dtype)
-        roi_end = (self.roi_center + halfsize).to(self.roi_center.dtype)
+    #     halfsize = 0.5 * self.roi_size
+    #     roi_start = (self.roi_center - halfsize).to(self.roi_center.dtype)
+    #     roi_end = (self.roi_center + halfsize).to(self.roi_center.dtype)
 
-        # we could just set roi as image center and size as image size
-        assert torch.all(
-            roi_end - roi_start <= shape
-        ), f"ROI ({roi_end - roi_start}) is larger than image ({shape})"
+    #     # we could just set roi as image center and size as image size
+    #     assert torch.all(
+    #         roi_end - roi_start <= shape
+    #     ), f"ROI ({roi_end - roi_start}) is larger than image ({shape})"
 
-        move_roi_center = torch.zeros_like(self.roi_center)
+    #     move_roi_center = torch.zeros_like(self.roi_center)
 
-        # check less than 0
-        outside = roi_start < 0
-        move_roi_center[outside] -= roi_start[outside]
+    #     # check less than 0
+    #     outside = roi_start < 0
+    #     move_roi_center[outside] -= roi_start[outside]
 
-        # check larger than image shape
-        mm = (roi_end_d := roi_end - shape) > 0
-        move_roi_center[mm] -= roi_end_d[mm]
+    #     # check larger than image shape
+    #     mm = (roi_end_d := roi_end - shape) > 0
+    #     move_roi_center[mm] -= roi_end_d[mm]
 
-        self.roi_center += move_roi_center
+    #     self.roi_center += move_roi_center
 
     def construct_deformed_grid(self, shape, center_coords):
         if not self.do_task["linear_deform"] and not self.do_task["nonlinear_deform"]:
+            # No reason to do grid sampling; just crop the image instead
             self.deformed_grid = None
             # make a spatial cropper that includes the to-be-sampled voxels
-            self.roi_center = center_coords
-            self.roi_size = self.ensure_divisible_size(self.fov_size)
-            self.adjust_roi_center(shape)
-
-            self.spatial_crop = monai.transforms.SpatialCrop(
-                roi_center=self.roi_center,
-                roi_size=self.roi_size,
-            )
+            # self.roi_center = center_coords
+            # self.roi_size = self.ensure_divisible_size(self.fov_size)
+            # self.adjust_roi_center(shape)
+            # self.spatial_crop = monai.transforms.SpatialCrop(
+            #     roi_center=center_coords,
+            #     roi_size=self.fov_size,
+            # )
+            self.spatial_crop = SpatialCrop(shape, self.fov_size, center_coords)
             return
 
-        deformed_grid = self.grid_center.clone()  # the centered grid
+        # avoid in-place modifications
+        deformed_grid = self.grid_center.clone() # the centered grid
 
         if self.do_task["nonlinear_deform"]:
             nonlin_deform = self.as_channel_last(self.nonlinear_transform_fwd)
-            # avoid in-place modifications
             deformed_grid += nonlin_deform
 
         if self.do_task["linear_deform"]:
@@ -565,26 +607,29 @@ class Synthesizer(torch.nn.Module):
         if center_coords is not None:
             deformed_grid += center_coords
 
-        for i, s in enumerate(shape):
-            deformed_grid[..., i].clamp_(0, s - 1)
+        # for i, s in enumerate(shape):
+        #     deformed_grid[..., i].clamp_(0, s - 1)
 
-        margin_min = deformed_grid.amin((0, 1, 2)).floor()
-        margin_max = deformed_grid.amax((0, 1, 2)).ceil() + 1
+        # margin_min = deformed_grid.amin((0, 1, 2)).floor()
+        # margin_max = deformed_grid.amax((0, 1, 2)).ceil() + 1
 
-        self.roi_size = self.ensure_divisible_size(margin_max - margin_min)
-        self.roi_center = self.center_from_shape(self.roi_size)
-        self.adjust_roi_center(shape)
+        # self.roi_size = self.ensure_divisible_size(margin_max - margin_min)
+        # self.roi_center = self.center_from_shape(self.roi_size)
+        # self.adjust_roi_center(shape)
+
+        self.spatial_crop = None
 
         # make a spatial cropper that includes the to-be-sampled voxels
-        self.spatial_crop = monai.transforms.SpatialCrop(
-            roi_center=self.roi_center,
-            roi_size=self.roi_size,
-        )
+        # self.spatial_crop = monai.transforms.SpatialCrop(
+        #     roi_center=self.roi_center,
+        #     roi_size=self.roi_size,
+        # )
+
         # self.spatial_crop = monai.transforms.SpatialCrop(
         #     roi_start=margin_min, roi_end=margin_max
         # )
 
-        self.deformed_grid = deformed_grid - margin_min
+        self.deformed_grid = deformed_grid # - margin_min
 
         # if nonlin_deform is None and lin_deform is None:
         #     return None
@@ -593,7 +638,10 @@ class Synthesizer(torch.nn.Module):
         #     return deformed_grid - margin_min
 
     def crop_images(self, images):
-        return {k: self.spatial_crop(v) for k, v in images.items()}
+        if self.spatial_crop is not None:
+            return {k: self.spatial_crop(v) for k, v in images.items()}
+        else:
+            return {k: v for k, v in images.items()}
 
     def preprocess_images(
         self,
