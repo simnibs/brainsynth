@@ -53,6 +53,11 @@ class Synthesizer(torch.nn.Module):
         """Dataset synthesizer.
 
 
+
+        Does not work on GPU as some monai transformations create numpy arrays.
+        E.g., Resize. The zoom affinity (scale_affine) is created as a numpy array and
+        `to_affine_nd` also does this.
+
         Parameters
         ----------
         config : dict
@@ -198,7 +203,8 @@ class Synthesizer(torch.nn.Module):
 
     def normalize_coordinates(self, v, shape):
         c = self.center_from_shape(shape)
-        return torch.clip((v - c) / c, -1.0, 1.0)
+        return (v - c) / c
+        # return torch.clip((v - c) / c, -1.0, 1.0)
 
         # when using align_corners=False
         # normalizer = (2.0 / torch.maximum(torch.Tensor([2.0]), self.fov_size[:, None, None, None]))
@@ -235,7 +241,7 @@ class Synthesizer(torch.nn.Module):
             self.center = self.center_from_shape(fov_size)
             self.grid_center = self.grid - self.center
             self.resize_to_fov = monai.transforms.Resize(
-                fov_size, mode=self.config.fov.resize_order
+                fov_size, mode=self.config.fov.resize_order#, dtype=None
             )
 
     def check_prob(self, probability):
@@ -873,7 +879,7 @@ class Synthesizer(torch.nn.Module):
 
         # Generate (log-transformed) bias field
 
-        biasfield = self.synthesize_bias_field()
+        biasfield = self.synthesize_bias_field(gen_label.meta)
         # biasfield = monai.transforms.RandBiasField(degree=5, coeff_range=(0,0.1), prob=0.5)
 
         # Synthesize the new contrast and deform it
@@ -926,7 +932,7 @@ class Synthesizer(torch.nn.Module):
         # which is also the case for rh compared to lh.
         return {HEMI_FLIP[h]: v for h, v in surfaces.items()}
 
-    def synthesize_bias_field(self):
+    def synthesize_bias_field(self, meta):
         """Synthesize a log-transformed bias field."""
         bf = self.config.biasfield
 
@@ -941,6 +947,7 @@ class Synthesizer(torch.nn.Module):
         BFsmall = bf.std_min + (bf.std_max - bf.std_min) * torch.rand(1) * torch.randn(
             *size_BF_small
         )
+        # BFsmall = monai.data.MetaTensor(BFsmall, meta=meta)
 
         return self.resize_to_fov(BFsmall[None])  # add channel dim
 
