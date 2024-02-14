@@ -14,8 +14,10 @@ fov:
   #   hemi    : center of hemispheres (left/right selected randomly)
   # brain = union of lh and rh
 
-  # CURRENTLY SIZE HAS TO BE AN ARRAY!! AND PAD IS IGNORED...
-  center: random_hemi     # brain, image, lh, rh, random, random_hemi, [1,2,3]
+  # CURRENTLY:
+  # - SIZE HAS TO BE AN ARRAY!!
+  # - PAD IS IGNORED...
+  center: brain     # brain, image, lh, rh, random, random_hemi, [1,2,3]
   size: [192, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
@@ -33,6 +35,7 @@ deformation:
     # shear_range: [0.2, 0.2, 0.2]
     # scale_range: [0.2, 0.2, 0.2]
 
+  # NOTE: this is slow when including surfaces!
   nonlinear:
     probability: 0.0
     nonlin_scale_min: 0.03
@@ -45,13 +48,14 @@ deformation:
   # and convert to one-hot
   # deform_one_hots: False
 
-flip: # LR flip
+# NOTE: currently this only does LR flip!
+flip:
   probability: 0.0 # 0.5
 
 # Intensity profile of the synthesized image
 intensity:
   # Probability of synthesizing a new contrast
-  probability: 0.0 # 0.9
+  probability: 0.9 # 0.9
 
   # The means and standard deviations from which intensities are drawn (uniform
   # distributions with the following parameters)
@@ -67,6 +71,7 @@ intensity:
     # noise_std_min: 5
     # noise_std_max: 15
 
+  # model gray matter as a gradient between white matter and CSF
   partial_volume_effect: True # partial volume?
 
   # bspline_zooming: False # TODO
@@ -74,6 +79,11 @@ intensity:
   gamma_transform:
     probability: 1.0
     gamma_range: [0.8, 1.2] # gamma_std: 0.1
+
+  # implemented by settings mean and variance of all gaussians with label >500
+  # to zero
+  skull_strip:
+    probability: 0.5
 
 # Bias field added to the synthesized image
 biasfield:
@@ -96,6 +106,7 @@ exvivo:
 photo_mode:
   probability: 0.0
 
+# TODO: currently unused
 artifacts:
   gibbs_noise:
     probability: 0.1
