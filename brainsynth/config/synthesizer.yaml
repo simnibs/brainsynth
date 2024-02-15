@@ -65,11 +65,10 @@ intensity:
   sigma_scale: 20
 
   gaussian_noise:
-    probability: 1.0
+    prob: 1.0
+    # noise is drawn from normal[mean, uniform[std_range[0], std_range[1]]]
     mean: 0.0
-    std: 10.0
-    # noise_std_min: 5
-    # noise_std_max: 15
+    std_range: [5.0, 15.0]
 
   # model gray matter as a gradient between white matter and CSF
   partial_volume_effect: True # partial volume?
@@ -77,8 +76,10 @@ intensity:
   # bspline_zooming: False # TODO
 
   gamma_transform:
-    probability: 1.0
-    gamma_range: [0.8, 1.2] # gamma_std: 0.1
+    prob: 1.0
+    # gamma is drawn from exp( normal(mean, std) )
+    mean: 0.0
+    std: 0.1
 
   # implemented by settings mean and variance of all gaussians with label >500
   # to zero

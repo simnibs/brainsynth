@@ -8,18 +8,18 @@ from brainsynth.config.utilities import load_config
 from brainsynth.constants import constants
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.spatial_utils import get_roi_center_size
-from brainsynth.transforms import AsDiscreteWithReindex, SpatialCrop
+import brainsynth.transforms
 
 from brainsynth.supersynth_utils import make_affine_matrix, resolution_sampler, resolution_sampler_1mm_isotropic
 HEMI_FLIP = dict(zip(constants.HEMISPHERES, constants.HEMISPHERES[::-1]))
 
-"""
 
+"""
 from brainsynth import Synthesizer
 from brainsynth.dataset import CroppedDataset
 import matplotlib.pyplot as plt
 
-synth = Synthesizer()
+self = Synthesizer()
 
 ds = CroppedDataset(
     "/mnt/projects/skull_reco/bjorn/brainsynth_output",
@@ -27,11 +27,23 @@ ds = CroppedDataset(
     surface_resolution=None
 )
 
+ds = CroppedDataset(
+    "/mnt/scratch/personal/jesperdn/datasets/OASIS3",
+    subjects=["sub-0001"],
+    default_images=["norm", "segmentation", "generation"],
+    surface_resolution=None
+)
+
 images, surfaces, temp_verts, info = ds[0]
 
-y_true_img, y_true_surf, init_vertices = synth(
+true_surfs = surfaces
+init_surfs = temp_verts
+disable_synth = False
+
+y_true_img, y_true_surf, init_vertices = self(
     images, surfaces, temp_verts, info
 )
+
 if "synth" in y_true_img:
     i = "synth"
     fig, ax = plt.subplots(1, 3, figsize=(10,4))
@@ -39,6 +51,8 @@ if "synth" in y_true_img:
     ax[1].imshow(y_true_img[i][0,0].numpy()[:, 100]);
     ax[2].imshow(y_true_img[i][0,0].numpy()[..., 100]);
     fig.show()
+    plt.figure();plt.hist(y_true_img[i][0,0].numpy().ravel(), 100, log=True);
+
 i = "norm"
 fig, ax = plt.subplots(1, 3, figsize=(10,4))
 ax[0].imshow(y_true_img[i][0,0].numpy()[100]);
@@ -52,7 +66,8 @@ class Synthesizer(torch.nn.Module):
     def __init__(self, config=None, device="cpu"):
         """Dataset synthesizer.
 
-
+        Drawing many values from a normal distribution are the slow parts
+        (about 200 ms per call for a 192**3 image on a CPU).
 
         Does not work on GPU as some monai transformations create numpy arrays.
         E.g., Resize. The zoom affinity (scale_affine) is created as a numpy array and
@@ -121,41 +136,30 @@ class Synthesizer(torch.nn.Module):
         # self.rand_grid = monai.transforms.RandGrid(prob=1, )
 
         # intensity
-
-        # torch.exp(self.config["intensity"]["gamma_std"] * torch.Tensor([2.0]))
-
-        # gamma: previous sampled from normal distribution around 1.0
-        cfg = self.config.intensity.gamma_transform
-        self.gamma_transform = monai.transforms.RandAdjustContrast(
-            cfg.probability, cfg.gamma_range
-        )
-
-        # Synthesized image
-
-        # self.blabla = monai.transforms.compose([])
-
-        self.scale_intensity = monai.transforms.ScaleIntensity()  # scale to 0-1
+        self.normalize_intensity = brainsynth.transforms.NormalizeIntensity()
         self.eliminate_negative_values = monai.transforms.ThresholdIntensity(
             0.0, cval=0.0
         )
 
         # artifacts
 
-        # self.artifacts = monai.transforms.compose([])
-        cfg = self.config.intensity.gaussian_noise
-        self.rand_gauss_noise = monai.transforms.RandGaussianNoise(
-            cfg.probability,
-            cfg.mean,
-            cfg.std,
-        )
         # self.gibbs = monai.transforms.RandGibbsNoise()
         # self.alias =
         # self.motion =
         # self.biasfield =
 
         with torch.device(self.device):
+            self.gamma_transform = brainsynth.transforms.RandGammaTransform(
+                **vars(self.config.intensity.gamma_transform)
+            )
+            self.rand_gauss_noise = brainsynth.transforms.RandGaussianNoise(
+                **vars(self.config.intensity.gaussian_noise)
+            )
+
             self.set_grid_from_fov(self.fov_size)
             self._complete_setup()
+            # self._generator = torch.Generator()
+            # self._rand_buffer = torch.empty(tuple(self.fov_size))
 
     def _complete_setup(self):
         # new image grid
@@ -171,7 +175,7 @@ class Synthesizer(torch.nn.Module):
             getattr(constants.labeling_scheme, self.config.labeling_scheme)
         )
         n_seg_labels = len(seg_labels)
-        self.as_onehot = AsDiscreteWithReindex(seg_labels)
+        self.as_onehot = brainsynth.transforms.AsDiscreteWithReindex(seg_labels)
 
         # n_neutral_labels = self.config.labeling.synth.incl_csf_n_neutral_labels
         n_neutral_labels = getattr(
@@ -596,7 +600,7 @@ class Synthesizer(torch.nn.Module):
             #     roi_center=center_coords,
             #     roi_size=self.fov_size,
             # )
-            self.spatial_crop = SpatialCrop(shape, self.fov_size, center_coords)
+            self.spatial_crop = brainsynth.transforms.SpatialCrop(shape, self.fov_size, center_coords)
             return
 
         # avoid in-place modifications
@@ -798,25 +802,42 @@ class Synthesizer(torch.nn.Module):
 
         mu, sigma = self.generate_gaussians()
 
+        insert_pv = False
+        if self.config.intensity.partial_volume_effect:
+            # That is, 2 < label < 4
+            mask = (label > lut.Left_Cerebral_White_Matter) & (label < lut.Left_Lateral_Ventricle)
+
+            inner = lut.Left_Cerebral_White_Matter
+
+            if mask.any(): # only if we have partial volume information
+                Gv = label[mask]
+                isv = torch.zeros(Gv.shape)
+                pw = (Gv <= 3) * (3 - Gv)
+                isv += pw * mu[2] + pw * sigma[2] * torch.randn(Gv.shape)
+                pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
+                isv += pg * mu[3] + pg * sigma[3] * torch.randn(Gv.shape)
+                pcsf = (Gv >= 3) * (Gv - 3)
+                isv += pcsf * mu[4] + pcsf * sigma[4] * torch.randn(Gv.shape)
+                insert_pv = True
+
         # skull-strip every now and then by relabeling extracerebral tissues to
         # background
         if self.do_task["skull_strip"]:
             Gr[Gr >= 500] = 0
+            # Should we also skull-strip the biasfield..?
 
         # sample synthetic image from gaussians
+        # a = mu[Gr]
+        # b = sigma[Gr]
+        # c = torch.randn(Gr.shape)
+        # SYN = a + b * c
+        # d = self._rand_buffer.normal_(a, b, generator=self._generator)
+        # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
+
+
         SYN = mu[Gr] + sigma[Gr] * torch.randn(Gr.shape)
 
-        if self.config.intensity.partial_volume_effect:
-            mask = label != Gr
-            SYN[mask] = 0
-            Gv = label[mask]
-            isv = torch.zeros(Gv.shape)
-            pw = (Gv <= 3) * (3 - Gv)
-            isv += pw * mu[2] + pw * sigma[2] * torch.randn(Gv.shape)
-            pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
-            isv += pg * mu[3] + pg * sigma[3] * torch.randn(Gv.shape)
-            pcsf = (Gv >= 3) * (Gv - 3)
-            isv += pcsf * mu[4] + pcsf * sigma[4] * torch.randn(Gv.shape)
+        if insert_pv:
             SYN[mask] = isv
 
         SYN[SYN < lut.Unknown] = lut.Unknown
@@ -878,18 +899,13 @@ class Synthesizer(torch.nn.Module):
             return {}
 
         # Generate (log-transformed) bias field
-
         biasfield = self.synthesize_bias_field(gen_label.meta)
         # biasfield = monai.transforms.RandBiasField(degree=5, coeff_range=(0,0.1), prob=0.5)
 
-        # Synthesize the new contrast and deform it
-        synth = self.apply_grid_sample(
-            self.synthesize_contrast(gen_label), self.deformed_grid
-        )
 
-        # Manipulate synthesizer image
-
-        # deformed["synth_clean"] = deformed["synth"].clone().detach()
+        # Synthesize, deform, corrupt
+        synth = self.synthesize_contrast(gen_label)
+        synth = self.apply_grid_sample(synth, self.deformed_grid)
         synth = self.gamma_transform(synth)
         synth = self.add_bias_field(synth, biasfield)
         synth = self.simulate_resolution(synth, input_resolution)
@@ -966,7 +982,7 @@ class Synthesizer(torch.nn.Module):
 
         # Apply resolution and slice thickness blurring if different from the
         # target resolution
-        if input_resolution.equal(target_resolution):
+        if eq_res := input_resolution.equal(target_resolution):
             SYN_small = image
         else:
             stds = (
@@ -992,20 +1008,16 @@ class Synthesizer(torch.nn.Module):
             )
             small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
 
-            # the downsampled synthetic image
+            # the downsampled, synthetic image
             SYN_small = self.apply_grid_sample(SYN_blurred, small_grid)
-
-        # noise_std = intensity["noise_std_min"] + (
-        #     intensity["noise_std_max"] - intensity["noise_std_min"]
-        # ) * torch.rand(1)
-        # SYN_noisy = SYN_small + noise_std * torch.randn(SYN_small.shape)
 
         SYN_noisy = self.rand_gauss_noise(SYN_small)
         SYN_noisy = self.eliminate_negative_values(SYN_noisy)
-        SYN_resized = self.resize_to_fov(SYN_noisy)
-        SYN_final = self.scale_intensity(SYN_resized)
+        SYN_resized = self.resize_to_fov(SYN_noisy) if not eq_res else SYN_noisy
+        SYN_final = self.normalize_intensity(SYN_resized)
 
         return SYN_final
+
 
     def random_sampler(self, in_res):
         if self.do_task["photo_mode"]:
