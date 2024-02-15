@@ -52,7 +52,6 @@ class SpatialCrop(monai.transforms.Transform):
         )
 
     def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
-
         out_size = torch.zeros(image.ndim, dtype=self.out_size.dtype)
         out_size[-3:] = self.out_size
         for i,s in enumerate(image.shape[:-3]):
@@ -64,3 +63,53 @@ class SpatialCrop(monai.transforms.Transform):
         out[..., *self.slice_out] = image[..., *self.slice_in]
         return out
 
+class NormalizeIntensity(monai.transforms.Transform):
+    def __call__(self, image):
+        r = image.aminmax()
+        return (image - r.min) / (r.max - r.min)
+
+# Random transforms
+
+class RandomizableTransform(monai.transforms.Transform):
+    """Similar to monai.transforms.RandomizableTransform but using torch."""
+    def __init__(self, prob: float = 1.0, do_transform: bool = True):
+        self._do_transform = do_transform
+        self.prob = min(max(prob, 0.0), 1.0)
+
+    def randomize(self) -> None:
+        """
+        """
+        self._do_transform = torch.rand(1) < self.prob
+
+class RandGaussianNoise(RandomizableTransform):
+    def __init__(self, prob, mean, std_range):
+        super().__init__(prob)
+        self.mean = mean
+        self.std_range = std_range
+
+    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+        super().randomize()
+        if not self._do_transform:
+            return image
+        a,b = self.std_range
+        std = a + (b - a) * torch.rand(1)
+        return image + self.mean + std * torch.randn(image.shape)
+
+class RandGammaTransform(RandomizableTransform):
+    def __init__(self, prob: float, mean, std):
+        super().__init__(prob)
+        self.mean = mean
+        self.std = std
+
+    def _sample_gamma(self):
+        return torch.exp(self.mean + self.std * torch.randn(1))
+
+    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+        super().randomize()
+        if not self._do_transform:
+            return image
+        gamma = self._sample_gamma()
+        # apply transform
+        ra = image.aminmax()
+        r = ra.max - ra.min
+        return ((image - ra.min) / r) ** gamma * r + ra.min
