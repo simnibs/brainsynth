@@ -229,7 +229,7 @@ def prepare_freesurfer_data(
     )
 
     print(filenames.default_images.generation)
-    nib.Nifti1Image(gen_labels.astype(LABEL_DTYPE), affine).to_filename(
+    nib.Nifti1Image(gen_labels.astype(IMAGE_DTYPE), affine).to_filename(
         out_dir / filenames.default_images.generation
     )
 
@@ -261,20 +261,10 @@ def prepare_freesurfer_data(
 
     print("Writing surfaces")
 
-    # @staticmethod
-    # def n_vertices_to_n_faces(nv):
-    #     return 2 * nv - 4
-
-    # @staticmethod
-    # def n_faces_to_level(nf, base_nf):
-    #     return torch.log2(nf // base_nf) // 2
-
-    # @staticmethod
-    # def n_faces_at_level(level, base_nf):
-    #     return base_nf * 4 ** level
-
     def n_vertices_at_level(i, base_nf=120):
-        """Estimate number of vertices at the ith level of the template surface."""
+        """Estimate number of vertices at the ith level of the template
+        surface.
+        """
         return (base_nf * 4**i + 4) // 2
 
     for i in constants.SURFACE_RESOLUTIONS:
@@ -334,7 +324,13 @@ class Surface:
 def process_additional_images(
     subject_dir, images, affine, out_dir, dtype, apply_coreg=True
 ):
-    """Register to /mri/orig.mgz, conform, and align to identity affine."""
+    """Perform the following steps
+
+        - Register to /mri/orig.mgz (depends on `apply_coreg`)
+        - conform
+        - align to identity affine.
+
+    """
     if images is None:
         return
 
@@ -592,7 +588,7 @@ def make_rolled_mask(mask0, mask1):
 def refine_generation_labels_(gen_labels, seg_labels, dist_maps):
     """In place update of `gen_labels` with partial volume 'labels' from the
     distance maps. We use PV labels for the white-cortex and cortex-csf
-    interface, e.g., 2.25 means 75% label 2 and 25% label 3, and so forth.
+    interface, e.g., 2.25 means 75% label 2 and 25% label 3, etc.
     """
     rho = 1.5
 
