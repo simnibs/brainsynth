@@ -125,17 +125,17 @@ def prepare_freesurfer_data(
     # Get norm.mgz, nu.mgz, aparc+aseg.mgz
     norm = nib.load(mri_dir / "norm.mgz")
     cras = norm.header["Pxyz_c"]  # Surface RAS <--> RAS offset
-    norm = align_with_identify_affine(norm)
+    norm = align_with_identity_affine(norm)
     norm_dat = norm.get_fdata()
     norm_dat /= np.percentile(norm_dat, 99.9)  # /= 128 in Eugenio's original version
     np.clip(norm_dat, 0, 1, out=norm_dat)
 
     nu = nib.load(mri_dir / "nu.mgz")
-    nu = align_with_identify_affine(nu)
+    nu = align_with_identity_affine(nu)
     nu_dat = nu.get_fdata()
 
     aparc = nib.load(mri_dir / "aparc+aseg.mgz")
-    aparc = align_with_identify_affine(aparc)
+    aparc = align_with_identity_affine(aparc)
     aparc_dat = aparc.get_fdata().astype(int)
     aparc_dat[aparc_dat >= 2000] = lut.Right_Cerebral_Cortex
     aparc_dat[aparc_dat >= 1000] = lut.Left_Cerebral_Cortex
@@ -253,7 +253,6 @@ def prepare_freesurfer_data(
     process_additional_images(
         subject_dir,
         additional_images,
-        affine,
         out_dir,
         IMAGE_DTYPE,
         coreg_additional_images,
@@ -322,7 +321,7 @@ class Surface:
 
 
 def process_additional_images(
-    subject_dir, images, affine, out_dir, dtype, apply_coreg=True
+    subject_dir, images, out_dir, dtype, apply_coreg=True
 ):
     """Perform the following steps
 
@@ -370,7 +369,7 @@ def process_additional_images(
             subprocess.run(cmd_conform.format(**kwargs).split(), check=True)
 
             conformed = nib.load(tmp_mgz)
-            conformed = align_with_identify_affine(conformed)
+            conformed = align_with_identity_affine(conformed)
             conformed_dat = conformed.get_fdata()
 
             # Contrast-specific processing
@@ -389,7 +388,7 @@ def process_additional_images(
                     conformed_dat /= np.percentile(conformed_dat, 99.9)
                     np.clip(conformed_dat, 0, 1, out=conformed_dat)
 
-            nib.Nifti1Image(conformed_dat.astype(dtype), affine).to_filename(
+            nib.Nifti1Image(conformed_dat.astype(dtype), conformed.affine).to_filename(
                 out_dir / getattr(filenames.optional_images, sequence)
             )
 
@@ -405,7 +404,7 @@ def crop_label_volume(data, margin=10, threshold=0):
     return tuple(slice(i, j) for i, j in zip(coords0, coords1))
 
 
-def align_with_identify_affine(img):
+def align_with_identity_affine(img):
     """Reorient image (and possibly flip dimensions) so as to bring as close as
     possible to having an identity affine transformation matrix.
     """
