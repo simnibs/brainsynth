@@ -1,7 +1,7 @@
 import torch
 
 def image_center_from_shape(shape: torch.Tensor):
-    return (shape - 1) / 2
+    return 0.5 * (shape - 1.0)
 
 
 def get_roi_center_size(
@@ -22,7 +22,7 @@ def get_roi_center_size(
         case "image":
             roi_center = image_center_from_shape(shape)
         case "brain" | "lh" | "rh":
-            roi_center = bbox[fov_center].float().mean(0).round().int()
+            roi_center = bbox[fov_center].float().mean(0) # .round().int()
         case torch.Tensor():
             roi_center = fov_center
         case _:
