@@ -2,7 +2,9 @@ rng_seed: null
 
 # Segmentation labeling scheme as produced by prepare_freesurfer_data
 # Currently, this is hardcoded in `prepare_freesurfer_data`
-labeling_scheme: incl_csf
+labeling_scheme:
+  segmentation: incl_csf
+  segmentation_brain: wmgm
 
 # SETTINGS FOR SYNTHESIZED IMAGE(S)
 
@@ -18,7 +20,7 @@ fov:
   # - SIZE HAS TO BE AN ARRAY!!
   # - PAD IS IGNORED...
   center: brain     # brain, image, lh, rh, random, random_hemi, [1,2,3]
-  size: [192, 192, 192]   # brain, image, lh, rh, hemi, [1,2,3]
+  size: [176, 192, 176]   # brain, image, lh, rh, hemi, [1,2,3] [176, 192, 172]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
 
@@ -55,20 +57,21 @@ flip:
 # Intensity profile of the synthesized image
 intensity:
   # Probability of synthesizing a new contrast
-  probability: 0.9 # 0.9
+  probability: 1.0 # 0.8 # 0.9
 
   # The means and standard deviations from which intensities are drawn (uniform
   # distributions with the following parameters)
-  mu_offset: 25
-  mu_scale: 200
-  sigma_offset: 5
-  sigma_scale: 20
+  mu_offset: 25.0
+  mu_scale: 200.0
+  sigma_offset: 0.0 # 5.0
+  sigma_scale: 10.0 # 20.0
 
   gaussian_noise:
-    prob: 1.0
+    prob: 0.0
     # noise is drawn from normal[mean, uniform[std_range[0], std_range[1]]]
     mean: 0.0
-    std_range: [5.0, 15.0]
+    std_range: [0.0, 2.5]
+    # std_range: [5.0, 15.0]
 
   # model gray matter as a gradient between white matter and CSF
   partial_volume_effect: True # partial volume?
@@ -86,6 +89,11 @@ intensity:
   skull_strip:
     probability: 0.5
 
+  # Mix the synthesized image and *one* (randomly chosen) of the real images from `images`
+  blend:
+    probability: 0.0
+    images: [T1] # one or more of the images fed to the synthesizer
+
 # Bias field added to the synthesized image
 biasfield:
   probability: 1.0
@@ -97,12 +105,10 @@ biasfield:
 # Ex vivo
 exvivo:
   probability: 0.0
-  # prob_vs_photo: 0.66666666666666
   bag:
     probability: 0.5
     scale_min: 0.02
     scale_max: 0.08
-
 
 photo_mode:
   probability: 0.0
