@@ -8,7 +8,59 @@ from brainsynth.transforms import AsDiscreteWithReindex
 from brainsynth.spatial_utils import get_roi_center_size
 from brainsynth.constants import constants, filenames
 
-filename_subjects = lambda dataset: f"subjects_{dataset}.txt"
+filename_subjects = lambda dataset: f"{dataset}.txt"
+filename_subjects_subset = lambda dataset, subset: f"{dataset}_{subset}.txt"
+
+
+def setup_dataloader(
+    base_dir,
+    datasets,
+    subset=None,
+    synthesizer=None,
+    dataset_kwargs=None,
+    dataloader_kwargs=None,
+):
+    """Construct a dataloader by concatenating `datasets` (e.g., ds0, ds1).
+
+    Parameters
+    ----------
+    base_dir :
+        Base directory containing datasets. A dataset is found in
+        base_dir / dataset_name.
+    datasets :
+        List of dataset names.
+    dataset_kwargs :
+        Kwargs passed to dataset constructor.
+    dataloader_kwargs:
+        Kwargs passed to dataloader constructor.
+    """
+    dataset_kwargs = dataset_kwargs or {}
+    dataloader_kwargs = dataloader_kwargs or {}
+
+    base_dir = Path(base_dir)
+
+    # Individual datasets
+    datasets = [
+        SynthesizedDataset(
+            base_dir / ds,
+            load_dataset_subjects(base_dir, ds, subset),
+            synthesizer=synthesizer,
+            dataset_id=ds,
+            **dataset_kwargs,
+        )
+        for ds in datasets
+    ]
+    dataset = torch.utils.data.ConcatDataset(datasets)
+
+    dataloader = {
+        k: make_dataloader(v, **dataloader_kwargs) for k, v in dataset.items()
+    }
+
+    # original datasets are in
+    # dataloader["split_id"].dataset.dataset.datasets
+    #                        subset  concat  list of original ds
+    return dataloader
+
 
 
 def get_dataloader_concatenated_and_split(
@@ -154,9 +206,10 @@ def make_dataloader(
     shuffle=True,
     num_workers=2,
     prefetch_factor=2,
+    pin_memory=True,
     distributed=False,
 ):
-    kwargs = dict(batch_size=batch_size)
+    kwargs = dict(batch_size=batch_size, pin_memory=pin_memory)
     if distributed:
         kwargs |= dict(
             shuffle=False,
@@ -171,7 +224,13 @@ def make_dataloader(
     return monai.data.DataLoader(dataset, **kwargs)
 
 
-def write_dataset_subjects(data_dir, dataset, exclude=None):
+def write_dataset_subjects(
+        data_dir,
+        dataset,
+        subsets: dict | None = None,
+        exclude: list | tuple | None = None,
+        rng_seed: int | None = None,
+    ):
     """Write a file called `{dataset}.txt` in `data_dir`. Dataset is the name
     of a subdirectory of `data_dir` containing the data for this dataset. E.g.,
 
@@ -205,18 +264,36 @@ def write_dataset_subjects(data_dir, dataset, exclude=None):
     exclude = exclude or []
     subjects = [i.name for i in sorted(p.glob("*")) if i not in exclude]
 
-    # subjects = list(p.glob("*"))
-    # for subject in exclude:
-    #     subjects.remove(subject)
-
     np.savetxt(data_dir / filename_subjects(dataset), subjects, fmt="%s")
 
+    if subsets:
+        assert sum(subsets.values()) == 1.0
+        names = list(subsets.keys())
+        fractions = list(subsets.values())
+        if rng_seed is not None:
+            torch.manual_seed(rng_seed)
 
-def load_dataset_subjects(data_dir, dataset):
-    # return (Path(data_dir) / dataset).glob("*")
-    return np.genfromtxt(
-        Path(data_dir) / filename_subjects(dataset), dtype="str"
-    ).tolist()
+        rng = np.random.default_rng(rng_seed)
+        rng.shuffle(subjects)
+        n = len(subjects)
+        index = [np.round(n * f).astype(int) for f in fractions[:-1]]
+        arr = np.split(subjects, index)
+
+        for name, subarr in zip(names, arr):
+            np.savetxt(
+                data_dir / filename_subjects_subset(dataset, name), subarr, fmt="%s"
+            )
+
+
+def load_dataset_subjects(data_dir, dataset, subset=None):
+    if subset:
+        return np.genfromtxt(
+            Path(data_dir) / filename_subjects_subset(dataset, subset), dtype="str"
+        ).tolist()
+    else:
+        return np.genfromtxt(
+            Path(data_dir) / filename_subjects(dataset), dtype="str"
+        ).tolist()
 
 
 def get_spatial_crop(fov_center, fov_size, fov_pad, hemi_bbox=None, shape=None):
@@ -417,3 +494,176 @@ class CroppedDataset(torch.utils.data.Dataset):
         surfaces, initial_vertices = self.load_surfaces(subject_dir)
 
         return images, surfaces, initial_vertices, info
+
+
+class SynthesizedDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        dataset: str,
+        subjects: None | str | list | tuple = None,
+        synthesizer = None,
+        default_images: None | list | tuple = None,
+        optional_images: None | list | tuple = None,
+        alternative_synth: None | list | tuple = None,
+        surface_resolution: None | int = 6,
+        surface_hemi: None | list | str | tuple = "both",
+        rng_seed: None | int = None,
+    ):
+        """
+
+        Will read the specified surface resolution (and hemisphere depending on
+        bounding box argument)
+
+        subject_dir/
+
+            info.pt
+            surface.{resolution}.{hemi}.pt
+            t1.nii
+            segmentation.nii
+            ...
+
+        from brainsynth.dataset import *
+        surface_hemi = "both"
+        dataset_id = "HCP"
+        surface_resolution = 4
+        surface_hemi = "both"
+        alternative_synth = ("norm", )
+        optional_images = [] #("T1",)
+        default_images = ("generation", "segmentation", "norm")
+        subjects = "train"
+        data_dir = Path("/mnt/scratch/personal/jesperdn/datasets/")
+        dataset = "HCP"
+        synthesizer=None
+
+        ds = SynthesizedDataset(data_dir, dataset, subjects, synthesizer, default_images, optional_images, alternative_synth, surface_resolution, surface_hemi)
+
+        Parameters
+        ----------
+        subjects:
+            If None, then glob `dataset_dir`. If a string, then try to load
+            using numpy.loadtxt. This should be a file containing a list of
+            subjects to use. If tuple/list, it is a list of subject names.
+        synthesizer:
+            Configured synthesizer
+        """
+        self.data_dir = Path(data_dir)
+        self.dataset = dataset
+        self.dataset_dir = self.data_dir / self.dataset
+        match subjects:
+            case None:
+                subjects = list(self.dataset_dir.glob("*"))
+            case str():
+                subjects = load_dataset_subjects(self.data_dir, self.dataset, subjects)
+            # else expect a list/tuple of subject names
+        self.subjects = subjects
+        if synthesizer:
+            assert synthesizer.device == torch.device("cpu")
+        self.synthesizer = synthesizer
+
+        self.default_images = (
+            list(filenames.default_images._fields)
+            if default_images is None
+            else list(default_images)
+        )
+        self.optional_images = [] if optional_images is None else list(optional_images)
+        self.alternative_synth = [] if alternative_synth is None else list(alternative_synth)
+
+        self.surface_resolution = surface_resolution
+
+        match surface_hemi:
+            case None:
+                surface_hemi = []
+            case list() | tuple():
+                assert all(
+                    h in constants.HEMISPHERES for h in surface_hemi
+                ), "Invalid arguments to `surface_hemi`"
+            case "both":
+                surface_hemi = constants.HEMISPHERES
+            case "lh" | "rh":
+                surface_hemi = [surface_hemi]
+        self.surface_hemi = surface_hemi
+
+        # Transformations
+        self.load_image = monai.transforms.LoadImage(
+            reader="NibabelReader", ensure_channel_first=True
+        )
+
+        if rng_seed is not None:
+            torch.random.manual_seed(rng_seed)
+
+    def __len__(self):
+        return len(self.subjects)
+
+    def __getitem__(self, idx):
+        return self.load_data(self.dataset_dir / self.subjects[idx])
+
+    def load_surfaces(self, subject_dir):
+        if self.surface_resolution is None:
+            return {}, {}
+        else:
+            if self.surface_hemi == "random":
+                surface_hemi = [constants.HEMISPHERES[torch.randint(0, 2, (1,))]]
+            else:
+                surface_hemi = self.surface_hemi
+            surfaces = {
+                h: {
+                    k: monai.data.MetaTensor(v)
+                    for k, v in torch.load(
+                        subject_dir / filenames.surfaces[self.surface_resolution, h]
+                    ).items()
+                }
+                for h in surface_hemi
+            }
+            # load the initial resolution
+            r = constants.SURFACE_RESOLUTIONS[0]
+            initial_vertices = {
+                h: monai.data.MetaTensor(
+                    torch.load(subject_dir / filenames.surface_templates[r, h])
+                )
+                for h in surface_hemi
+            }
+
+            return surfaces, initial_vertices
+
+    def load_images(self, subject_dir):
+        images = {}
+        for image in self.default_images:
+            images[image] = self.load_image(subject_dir / getattr(filenames.default_images, image))
+        for image in self.optional_images:
+            images[image] = self.load_image(subject_dir / getattr(filenames.optional_images, image))
+        return images
+
+    def load_info(self, subject_dir):
+        return torch.load(subject_dir / filenames.info)
+
+    def load_data(self, subject_dir):
+        info = self.load_info(subject_dir)
+        images = self.load_images(subject_dir)
+        surfaces, initial_vertices = self.load_surfaces(subject_dir)
+
+        return self.apply_synthesizer(images, surfaces, initial_vertices, info)
+
+    def apply_synthesizer(
+        self, images, surfaces, init_vertices, info, disable_synth=False
+    ):
+        if self.synthesizer:
+            with torch.no_grad():
+                y_true_img, y_true_surf, init_vertices = self.synthesizer(
+                    images, surfaces, init_vertices, info, disable_synth
+                )
+        else:
+            y_true_img = images
+            y_true_surf = surfaces
+
+        # select a random contrast from the list of alternative images
+        if "synth" not in y_true_img:
+            sel = torch.randint(0, len(self.alternative_synth), (1,))
+            y_true_img["synth"] = y_true_img[self.alternative_synth[sel]]
+
+        image = y_true_img.pop("synth")
+
+        # y_true[img1], y_true[img2], y_true[surfaces][lh][white], etc.
+        return image, y_true_img, y_true_surf, init_vertices
+
+
