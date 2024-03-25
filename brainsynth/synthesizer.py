@@ -30,28 +30,51 @@ ds = CroppedDataset(
 ds = CroppedDataset(
     "/mnt/scratch/personal/jesperdn/datasets/OASIS3",
     subjects=["sub-0001"],
+    optional_images=["T1"],
     default_images=["norm", "segmentation", "generation"],
-    surface_resolution=None
+    surface_resolution=5
 )
 
 images, surfaces, temp_verts, info = ds[0]
-
 true_surfs = surfaces
 init_surfs = temp_verts
 disable_synth = False
 
-y_true_img, y_true_surf, init_vertices = self(
-    images, surfaces, temp_verts, info
-)
+for i in range(10):
+    y_true_img, y_true_surf, init_vertices = self(
+        images, surfaces, temp_verts, info
+    )
 
-if "synth" in y_true_img:
+    # if "synth" in y_true_img:
     i = "synth"
-    fig, ax = plt.subplots(1, 3, figsize=(10,4))
-    ax[0].imshow(y_true_img[i][0,0].numpy()[100]);
-    ax[1].imshow(y_true_img[i][0,0].numpy()[:, 100]);
-    ax[2].imshow(y_true_img[i][0,0].numpy()[..., 100]);
+    fig, ax = plt.subplots(1, 3, figsize=(20,8))
+    ax[0].imshow(y_true_img[i][0,0].numpy()[100, 50:150, 50:150]);
+    ax[1].imshow(y_true_img[i][0,0].numpy()[50:150, 100, 50:150]);
+    ax[2].imshow(y_true_img[i][0,0].numpy()[50:150, 50:150, 100]);
     fig.show()
-    plt.figure();plt.hist(y_true_img[i][0,0].numpy().ravel(), 100, log=True);
+#    plt.figure();plt.hist(y_true_img[i][0,0].numpy().ravel(), 100, log=True);
+
+from brainnet.mesh.topology import get_recursively_subdivided_topology
+tops=get_recursively_subdivided_topology(5)
+faces = tops[-1].faces.cpu().numpy()
+import numpy as np
+import nibabel as nib
+iport torch
+
+A = np.eye(4)
+
+nib.Nifti1Image(y_true_img["synth"][0,0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_synth.nii.gz")
+nib.Nifti1Image(y_true_img["T1"][0,0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_norm.nii.gz")
+nib.Nifti1Image(y_true_img["segmentation"][0].argmax(0).to(torch.int16).cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_seg.nii.gz")
+nib.freesurfer.write_geometry("/home/jesperdn/nobackup/brainnet_eval/synth_lh.white",
+    y_true_surf["lh"]["white"][0].cpu().numpy(), faces)
+
+nib.Nifti1Image(images["generation"][0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_orig_gen.nii.gz")
+nib.Nifti1Image(images["norm"][0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_orig_norm.nii.gz")
+nib.freesurfer.write_geometry("/home/jesperdn/nobackup/brainnet_eval/synth_orig_lh.white",
+    surfaces["lh"]["white"].cpu().numpy(), faces)
+
+
 
 i = "norm"
 fig, ax = plt.subplots(1, 3, figsize=(10,4))
@@ -83,7 +106,7 @@ class Synthesizer(torch.nn.Module):
         super().__init__()
 
         self.config = config or load_config()
-        self.device = device
+        self.device = torch.device(device)
         # self.fov_size_divisor = ensure_divisible_by
 
         # Map to tensors and device
@@ -96,9 +119,9 @@ class Synthesizer(torch.nn.Module):
                 self.fov_size = None
                 self.static_fov = False
             case _:
-                self.fov_size = torch.tensor(self.config.fov.size, device=device)
+                self.fov_size = torch.tensor(self.config.fov.size, device=self.device)
                 self.fov_size += 2 * torch.tensor(
-                    self.config.fov.pad, device=device
+                    self.config.fov.pad, device=self.device
                 ).expand(3)
                 self.static_fov = True
 
@@ -170,25 +193,24 @@ class Synthesizer(torch.nn.Module):
         # self.grid = self.grid_centered.clone()
         # self.grid[:3] += self.center[:, None, None, None]
 
-        # seg_labels = torch.tensor(self.config.labeling.synth.incl_csf)
-        seg_labels = torch.tensor(
-            getattr(constants.labeling_scheme, self.config.labeling_scheme)
-        )
-        n_seg_labels = len(seg_labels)
-        self.as_onehot = brainsynth.transforms.AsDiscreteWithReindex(seg_labels)
+        self.as_onehot = {}
+        self.vflip = {}
 
-        # n_neutral_labels = self.config.labeling.synth.incl_csf_n_neutral_labels
-        n_neutral_labels = getattr(
-            constants.n_neutral_labels, self.config.labeling_scheme
-        )
-        nlat = int((n_seg_labels - n_neutral_labels) / 2.0)
-        self.vflip = torch.cat(
-            (
-                torch.arange(n_neutral_labels),
-                torch.arange(n_neutral_labels + nlat, n_seg_labels),
-                torch.arange(n_neutral_labels, n_neutral_labels + nlat),
+        for seg,label_map in vars(self.config.labeling_scheme).items():
+
+            seg_labels = torch.tensor(getattr(constants.labeling_scheme, label_map))
+            n_seg_labels = len(seg_labels)
+            self.as_onehot[seg] = brainsynth.transforms.AsDiscreteWithReindex(seg_labels)
+
+            n_neutral_labels = getattr(constants.n_neutral_labels, label_map)
+            nlat = int((n_seg_labels - n_neutral_labels) / 2.0)
+            self.vflip[seg] = torch.cat(
+                (
+                    torch.arange(n_neutral_labels),
+                    torch.arange(n_neutral_labels + nlat, n_seg_labels),
+                    torch.arange(n_neutral_labels, n_neutral_labels + nlat),
+                )
             )
-        )
 
     def ensure_divisible_size(self, size):
         """Useful for for example UNets what downsample by a factor two every
@@ -204,6 +226,8 @@ class Synthesizer(torch.nn.Module):
     @staticmethod
     def center_from_shape(shape):
         return 0.5 * (shape - 1.0)
+        # return 0.5 * shape
+
 
     def normalize_coordinates(self, v, shape):
         c = self.center_from_shape(shape)
@@ -247,6 +271,7 @@ class Synthesizer(torch.nn.Module):
             self.resize_to_fov = monai.transforms.Resize(
                 fov_size, mode=self.config.fov.resize_order#, dtype=None
             )
+
 
     def check_prob(self, probability):
         """Return True according to `probability`."""
@@ -331,6 +356,7 @@ class Synthesizer(torch.nn.Module):
                 self.config.deformation.nonlinear.probability
             ),
             photo_mode = self.check_prob(self.config.photo_mode.probability),
+            blend = self.check_prob(self.config.intensity.blend.probability),
         )
         self.set_photo_mode_spacing()
 
@@ -405,9 +431,11 @@ class Synthesizer(torch.nn.Module):
             deformed = self.transform_images(images)
             deformed = self.postprocess_images_(deformed)
             deformed |= self.synthesize_image(images["generation"], info["resolution"])
+            deformed = self.blend_images(deformed)
             deformed = self.flip_images(deformed)
 
             out_shape = next(iter(deformed.values())).shape
+            # assert roi_size == out_shape, "is this true..?"
 
             # Process surfaces
             true_surfs = self.transform_surfaces(true_surfs, deformed_origin)
@@ -420,12 +448,25 @@ class Synthesizer(torch.nn.Module):
             # HANDLE THIS INTERNALLY INSTEAD
 
             # only add if they were removed...
-
             self.add_batch_dim_(deformed)
             self.add_batch_dim_(true_surfs)
             self.add_batch_dim_(init_surfs)
 
             return deformed, true_surfs, init_surfs
+
+    def blend_images(self, deformed):
+        if not ("synth" in deformed and self.do_task["blend"]):
+            return deformed
+
+        i = torch.randint(0, len(self.config.intensity.blend.images), (1,))
+        img = self.config.intensity.blend.images[i]
+
+        sr = torch.rand(1)
+        ir = 1 - sr
+        deformed["synth"] = sr * deformed["synth"] + ir * deformed[img]
+
+        return deformed
+
 
     # def randomize_linear_transform(self):
     #     # By default RandAffine generates a new random affine *each time* it is
@@ -805,9 +846,9 @@ class Synthesizer(torch.nn.Module):
         insert_pv = False
         if self.config.intensity.partial_volume_effect:
             # That is, 2 < label < 4
+            # wm = lut.Left_Cerebral_White_Matter
+            # gm = lut.Left_Lateral_Ventricle
             mask = (label > lut.Left_Cerebral_White_Matter) & (label < lut.Left_Lateral_Ventricle)
-
-            inner = lut.Left_Cerebral_White_Matter
 
             if mask.any(): # only if we have partial volume information
                 Gv = label[mask]
@@ -834,9 +875,16 @@ class Synthesizer(torch.nn.Module):
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
 
+        scale_factor = mu / (self.config.intensity.mu_offset + self.config.intensity.mu_scale)
+        scaled_sigma = sigma * scale_factor
 
-        SYN = mu[Gr] + sigma[Gr] * torch.randn(Gr.shape)
+        SYN = mu[Gr] + scaled_sigma[Gr] * torch.randn(Gr.shape)
 
+        # SYN = mu[Gr] + sigma[Gr] * torch.randn(Gr.shape)
+
+        # SYN = self.rand_gauss_noise(SYN)
+
+        # this will also kill the random gaussian noise in the PV areas
         if insert_pv:
             SYN[mask] = isv
 
@@ -865,6 +913,10 @@ class Synthesizer(torch.nn.Module):
                     deformed[name] = self.apply_grid_sample(
                         img.float(), self.deformed_grid, mode="nearest"
                     )
+                case "segmentation_brain":
+                    deformed[name] = self.apply_grid_sample(
+                        img.float(), self.deformed_grid, mode="nearest"
+                    )
                 case "distances":
                     # NOTE padding mode in Eugenio's version was distances.amax()
                     deformed[name] = self.apply_grid_sample(
@@ -879,7 +931,10 @@ class Synthesizer(torch.nn.Module):
     def postprocess_images_(self, images):
         """In-place"""
         if "segmentation" in images:
-            images["segmentation"] = self.as_onehot(images["segmentation"])
+            images["segmentation"] = self.as_onehot["segmentation"](images["segmentation"])
+
+        if "segmentation_brain" in images:
+            images["segmentation_brain"] = self.as_onehot["segmentation_brain"](images["segmentation_brain"])
 
         for name in images:
             match name:
@@ -916,10 +971,14 @@ class Synthesizer(torch.nn.Module):
         if not self.do_task["flip"]:
             return deformed
 
+        raise NotImplementedError("Please verify that the label flipping works before using this feature.")
+
         for k, v in deformed.items():
             deformed[k] = self.flip_lr(v)
             if k == "segmentation":
-                deformed[k] = deformed[k][self.vflip]
+                deformed[k] = deformed[k][self.vflip["segmentation"]]
+            if k == "segmentation_brain":
+                deformed[k] = deformed[k][self.vflip["segmentation_brain"]]
             elif k == "distances":
                 deformed[k] = deformed[k][[2, 3, 0, 1]]  # flip left/right
 
@@ -963,9 +1022,16 @@ class Synthesizer(torch.nn.Module):
         BFsmall = bf.std_min + (bf.std_max - bf.std_min) * torch.rand(1) * torch.randn(
             *size_BF_small
         )
-        # BFsmall = monai.data.MetaTensor(BFsmall, meta=meta)
+        # return self.resize_to_fov(BFsmall[None]) # add channel dim
+        # a = self.resize_to_fov(BFsmall[None]) # add channel dim
 
-        return self.resize_to_fov(BFsmall[None])  # add channel dim
+        return monai.data.MetaTensor(torch.nn.functional.interpolate(
+            input=BFsmall[None].unsqueeze(0),
+            size=tuple(self.fov_size),
+            mode="trilinear",
+            align_corners=True,
+        ).squeeze(0), meta=meta)
+
 
     def add_bias_field(self, image, bias_field):
         """Add a log-transformed bias field to an image."""
@@ -1011,7 +1077,8 @@ class Synthesizer(torch.nn.Module):
             # the downsampled, synthetic image
             SYN_small = self.apply_grid_sample(SYN_blurred, small_grid)
 
-        SYN_noisy = self.rand_gauss_noise(SYN_small)
+        SYN_noisy = SYN_small
+        # SYN_noisy = self.rand_gauss_noise(SYN_small)
         SYN_noisy = self.eliminate_negative_values(SYN_noisy)
         SYN_resized = self.resize_to_fov(SYN_noisy) if not eq_res else SYN_noisy
         SYN_final = self.normalize_intensity(SYN_resized)
