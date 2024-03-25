@@ -589,27 +589,38 @@ def refine_generation_labels_(gen_labels, seg_labels, dist_maps):
     distance maps. We use PV labels for the white-cortex and cortex-csf
     interface, e.g., 2.25 means 75% label 2 and 25% label 3, etc.
     """
-    rho = 1.5
+    # rho = 1.5
+    rho_gm = 3.0
+    rho_csf = 3.0
 
     # Really, this is left *and* right
     WM = gen_labels == lut.Left_Cerebral_White_Matter
     GM = gen_labels == lut.Left_Cerebral_Cortex
     CSF = seg_labels == lut.CSF
 
+    def transfer(x, i=1.0):
+        # sigmoid
+        return 1/(1 + np.exp(-i * x))
+
     # Compute p(WM)
-    pGM = np.clip(
-        np.exp(rho * np.minimum(dist_maps["lh", "white"], dist_maps["rh", "white"])),
-        0,
-        1,
-    )
+    # pGM = np.clip(
+    #     np.exp(rho_gm * np.minimum(dist_maps["lh", "white"], dist_maps["rh", "white"])),
+    #     0,
+    #     1,
+    # )
+    d = np.minimum(dist_maps["lh", "white"], dist_maps["rh", "white"])
+    pGM = transfer(d, rho_gm)
     pWM = 1 - pGM
     M = make_rolled_mask(WM, GM) | make_rolled_mask(GM, WM)
     gen_labels[M] = 2 * pWM[M] + 3 * pGM[M]  # Update generation labels
 
+
     # Compute p(GM)
-    pCSF = np.clip(
-        np.exp(rho * np.minimum(dist_maps["lh", "pial"], dist_maps["rh", "pial"])), 0, 1
-    )
+    # pCSF = np.clip(
+    #     np.exp(rho_csf * np.minimum(dist_maps["lh", "pial"], dist_maps["rh", "pial"])), 0, 1
+    # )
+    d = np.minimum(dist_maps["lh", "pial"], dist_maps["rh", "pial"])
+    pCSF = transfer(d, rho_csf)
     pGM = 1 - pCSF
     M = make_rolled_mask(CSF, GM) | make_rolled_mask(GM, CSF)
     gen_labels[M] = 3 * pGM[M] + 4 * pCSF[M]  # Update generation labels
