@@ -36,7 +36,7 @@ class SpatialCrop(monai.transforms.Transform):
         self.out_size = out_size
         self.out_center = out_center
 
-        halfsize = 0.5 * out_size
+        halfsize = 0.5 * (out_size - 1)
         start = torch.ceil(out_center - halfsize).int()
         stop = torch.floor(out_center + halfsize).int()
         stop += out_size - (stop-start)
@@ -63,10 +63,33 @@ class SpatialCrop(monai.transforms.Transform):
         out[..., *self.slice_out] = image[..., *self.slice_in]
         return out
 
+
+class Resize(monai.transforms.Transform):
+    def __init__(self, size: torch.Tensor | tuple | list):
+        self.size = tuple(size)
+        self.mode = "trilinear"
+
+    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+        if image.ndim == 3:
+            image = image[None]
+        if image.ndim == 4:
+            image = image[None]
+
+        return monai.data.MetaTensor(torch.nn.functional.interpolate(
+            input=image,
+            size=self.size,
+            mode=self.mode,
+            align_corners=True,
+        ).squeeze(0), meta=image.meta)
+
 class NormalizeIntensity(monai.transforms.Transform):
     def __call__(self, image):
-        r = image.aminmax()
-        return (image - r.min) / (r.max - r.min)
+        # r = image.aminmax()
+        # return (image - r.min) / (r.max - r.min)
+        ql = image.quantile(0.001)
+        qu = image.quantile(0.999)
+        return torch.clip((image - ql) / (qu - ql), 0.0, 1.0)
+
 
 # Random transforms
 
