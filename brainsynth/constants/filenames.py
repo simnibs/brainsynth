@@ -14,13 +14,12 @@ default_images = DefaultImageFiles(
     generation="generation.nii",
     segmentation="segmentation.nii",
     synthseg="synthseg.nii",
-
     norm="norm.nii", # REMOVE ? REPLACE with T1 and use orig.mgz?
 )
 
 # Optional images
 OptionalImageFiles = namedtuple(
-    "AdditionalImageFiles", ("CT", "FLAIR", "PD", "T1", "T2")
+    "AdditionalImageFiles", ("CT", "FLAIR", "PD", "T1", "T2", "segmentation_brain")
 )
 optional_images = OptionalImageFiles(
     CT="ct.nii",
@@ -28,6 +27,7 @@ optional_images = OptionalImageFiles(
     PD="pd.nii",
     T1="t1.nii",
     T2="t2.nii",
+    segmentation_brain="segmentation_brain.nii",
 )
 
 surfaces = {
