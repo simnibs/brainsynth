@@ -416,10 +416,6 @@ class Synthesizer(torch.nn.Module):
 
             deformed_origin = roi_center
 
-            # The first thing we do is sample the resolution and deformation,
-            # as this will give us a bounding box
-            # of the image region we need, so we don't have to read the whole thing from disk (only works for uncompressed niftis!
-
             self.randomize_linear_transform()
             self.randomize_nonlinear_transform()
 
@@ -936,12 +932,12 @@ class Synthesizer(torch.nn.Module):
         if "segmentation_brain" in images:
             images["segmentation_brain"] = self.as_onehot["segmentation_brain"](images["segmentation_brain"])
 
-        for name in images:
-            match name:
-                case "norm":
-                    # Remove background from real images
-                    # NOTE Perhaps we shouldn't do this???
-                    images["norm"] *= 1.0 - images["segmentation"][lut.Unknown]
+        # for name in images:
+        #     match name:
+        #         case "norm":
+        #             # Remove background from real images
+        #             # NOTE Perhaps we shouldn't do this???
+        #             images["norm"] *= 1.0 - images["segmentation"][lut.Unknown]
 
         return images
 
