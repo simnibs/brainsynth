@@ -30,7 +30,7 @@ def path_constructor(loader, node):
     return Path(loader.construct_scalar(node))
 
 def labeling_scheme_constructor(loader, node):
-    return getattr(constants.labeling_scheme, loader.construct_scalar(node))
+    return getattr(constants.segmentation_scheme, loader.construct_scalar(node))
 
 def include_constructor(loader, node):
     # os.path.join(os.path.dirname(loader.name), node.value)

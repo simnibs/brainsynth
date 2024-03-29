@@ -193,6 +193,8 @@ class Synthesizer(torch.nn.Module):
         # self.grid = self.grid_centered.clone()
         # self.grid[:3] += self.center[:, None, None, None]
 
+        self.generation_labels_kmeans = torch.tensor(constants.generation_labels_kmeans)
+
         self.as_onehot = {}
         self.vflip = {}
 
@@ -268,9 +270,7 @@ class Synthesizer(torch.nn.Module):
             )
             self.center = self.center_from_shape(fov_size)
             self.grid_center = self.grid - self.center
-            self.resize_to_fov = monai.transforms.Resize(
-                fov_size, mode=self.config.fov.resize_order#, dtype=None
-            )
+            self.resize_to_fov = brainsynth.transforms.Resize(fov_size)
 
 
     def check_prob(self, probability):
@@ -384,20 +384,6 @@ class Synthesizer(torch.nn.Module):
         # template_surface = template_surface or {}
 
         with torch.device(self.device):
-            # ugly hack for now...
-
-            # remove batch dim from info tensors...
-            for k, v in info.items():
-                if isinstance(v, dict):
-                    for kk, vv in v.items():
-                        info[k][kk] = vv.squeeze()
-                else:
-                    info[k] = v.squeeze()
-
-            # HANDLE THIS INTERNALLY INSTEAD
-            self.remove_batch_dim_(images)
-            self.remove_batch_dim_(true_surfs)
-            self.remove_batch_dim_(init_surfs)
 
             self.initialize_state()
 
@@ -442,11 +428,6 @@ class Synthesizer(torch.nn.Module):
             init_surfs = self.flip_surfaces(init_surfs, out_shape)
 
             # HANDLE THIS INTERNALLY INSTEAD
-
-            # only add if they were removed...
-            self.add_batch_dim_(deformed)
-            self.add_batch_dim_(true_surfs)
-            self.add_batch_dim_(init_surfs)
 
             return deformed, true_surfs, init_surfs
 
@@ -706,18 +687,18 @@ class Synthesizer(torch.nn.Module):
         #     else:
         #         images[k] = self.scale_intensity(images[k])
 
-        if (k := "bag") in images:
-            images[k] /= self.scale_distance
-
-        if (k := "distances") in images:
-            images[k] /= self.scale_distance
+        for k,image in images.items():
+            if k in constants.filenames.dist_maps:
+                image /= self.scale_distance
 
         # Decide if we're simulating ex vivo (and possibly a bag) or photos
         if self.do_task["photo_mode"] or self.do_task["exvivo"]:
-            gen_label = images["generation"]
+            raise NotImplementedError("Please check this implementation before using!")
+
+            gen_label = images["generation_labels"]
             gen_label[gen_label > 255] = lut.Unknown  # kill extracerebral
             if self.do_task["photo_mode"]:
-                seg_label = images["segmentation"]
+                seg_label = images["brainseg"] # or brainseg_with_extracerebral
                 test_elements = torch.IntTensor(
                     [
                         lut.Left_Cerebellum_White_Matter,
@@ -754,7 +735,7 @@ class Synthesizer(torch.nn.Module):
                         (gen_label == lut.Unknown) & (Dpial < th)
                     ] = lut.Left_Lateral_Ventricle
 
-            elif ("bag" in images) and self.do_task["bag"]:
+            elif ("brain_dist_map" in images) and self.do_task["bag"]:
                 gen_shape = torch.as_tensor(gen_label.shape)
                 bag_scale = self.config.exvivo.bag.scale_min + torch.rand(1) * (
                     self.config.exvivo.bag.scale_max - self.config.exvivo.bag.scale_min
@@ -820,48 +801,51 @@ class Synthesizer(torch.nn.Module):
         return surfaces
 
     def generate_gaussians(self):
-        # extracerebral tissue (from k-means clustering) are added as
-        # 500 + label so we need to take this into account, hence the value of
-        # n
         cfg = self.config.intensity
-        n = 500 + 10
-        mu = cfg.mu_offset + cfg.mu_scale * torch.rand(n)
-        sigma = cfg.sigma_offset + cfg.sigma_scale * torch.rand(n)
+
+        mu = torch.zeros(256)
+        sigma = torch.zeros(256)
+        n = 100 # no reason to generate more parameters
+
+        mu[:n] = cfg.mu_offset + cfg.mu_scale * torch.rand(n)
+        sigma[:n] = cfg.sigma_offset + cfg.sigma_scale * torch.rand(n)
 
         # set the background to zero every once in a while (or always in photo mode)
         if self.do_task["photo_mode"] or torch.rand(1) < 0.5:
             mu[0] = 0
 
+        if self.config.intensity.partial_volume_effect:
+            # PV is encoded between 100 and 250 such that
+            #   100 = 1 lesions
+            #   150 = 2 white matter
+            #   200 = 3 gray matter
+            #   250 = 4 csf
+            # where
+            #   RHS = 1 + (LHS-100)/50
+            #   LHS = 100 + 50(RHS-1).
+
+            # For example, 151, 152, ..., 199 encode fractional steps from WM
+            # to GM.
+
+            # mix parameters
+            frac = torch.linspace(0,1,50)
+
+            mu[100:150] = mu[1] + frac * (mu[2]-mu[1])
+            mu[150:200] = mu[2] + frac * (mu[3]-mu[2])
+            mu[200:250] = mu[3] + frac * (mu[4]-mu[3])
+            mu[250] = mu[4]
+
+            sigma[100:150] = sigma[1] + frac * (sigma[2]-sigma[1])
+            sigma[150:200] = sigma[2] + frac * (sigma[3]-sigma[2])
+            sigma[200:250] = sigma[3] + frac * (sigma[4]-sigma[3])
+            sigma[250] = sigma[4]
+
         return mu, sigma
 
-    def synthesize_contrast(self, label):
-        Gr = label.round().long()
+
+    def synthesize_contrast(self, gen_label):
 
         mu, sigma = self.generate_gaussians()
-
-        insert_pv = False
-        if self.config.intensity.partial_volume_effect:
-            # That is, 2 < label < 4
-            # wm = lut.Left_Cerebral_White_Matter
-            # gm = lut.Left_Lateral_Ventricle
-            mask = (label > lut.Left_Cerebral_White_Matter) & (label < lut.Left_Lateral_Ventricle)
-
-            if mask.any(): # only if we have partial volume information
-                Gv = label[mask]
-                isv = torch.zeros(Gv.shape)
-                pw = (Gv <= 3) * (3 - Gv)
-                isv += pw * mu[2] + pw * sigma[2] * torch.randn(Gv.shape)
-                pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
-                isv += pg * mu[3] + pg * sigma[3] * torch.randn(Gv.shape)
-                pcsf = (Gv >= 3) * (Gv - 3)
-                isv += pcsf * mu[4] + pcsf * sigma[4] * torch.randn(Gv.shape)
-                insert_pv = True
-
-        # skull-strip every now and then by relabeling extracerebral tissues to
-        # background
-        if self.do_task["skull_strip"]:
-            Gr[Gr >= 500] = 0
-            # Should we also skull-strip the biasfield..?
 
         # sample synthetic image from gaussians
         # a = mu[Gr]
@@ -871,66 +855,58 @@ class Synthesizer(torch.nn.Module):
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
 
+        # scale standard deviation of noise by mean signal intensity in that
+        # tissue
         scale_factor = mu / (self.config.intensity.mu_offset + self.config.intensity.mu_scale)
         scaled_sigma = sigma * scale_factor
 
-        SYN = mu[Gr] + scaled_sigma[Gr] * torch.randn(Gr.shape)
-
-        # SYN = mu[Gr] + sigma[Gr] * torch.randn(Gr.shape)
-
+        image = mu[gen_label] + scaled_sigma[gen_label] * torch.randn(gen_label.shape)
         # SYN = self.rand_gauss_noise(SYN)
+        image[image < lut.Unknown] = lut.Unknown
 
-        # this will also kill the random gaussian noise in the PV areas
-        if insert_pv:
-            SYN[mask] = isv
+        # skull-strip every now and then by relabeling extracerebral tissues to
+        # background
+        if self.do_task["skull_strip"]:
+            image[torch.isin(gen_label, self.generation_labels_kmeans)] = 0
+            # Should we also skull-strip the biasfield..?
 
-        SYN[SYN < lut.Unknown] = lut.Unknown
-
-        return SYN
+        return image
 
     def transform_images(self, images):
         deformed = {}
         for name, img in images.items():
-            match name:
-                case "generation":
-                    pass
-                case "segmentation":
-                    # if self.config.deformation.deform_one_hots:
-                    #     onehot = self.as_onehot(img)
-                    #     onehot = self.apply_grid_sample(onehot, self.deformed_grid)
-                    # else:
-                    #     def_labels = self.apply_grid_sample(
-                    #         img.float(), self.deformed_grid, mode="nearest"
-                    #     )
-                    #     onehot = self.as_onehot(def_labels)
-                    # deformed["label"] = def_labels  # this should be handled...
-                    # deformed["segmentation"] = onehot
-
-                    deformed[name] = self.apply_grid_sample(
-                        img.float(), self.deformed_grid, mode="nearest"
-                    )
-                case "segmentation_brain":
-                    deformed[name] = self.apply_grid_sample(
-                        img.float(), self.deformed_grid, mode="nearest"
-                    )
-                case "distances":
-                    # NOTE padding mode in Eugenio's version was distances.amax()
-                    deformed[name] = self.apply_grid_sample(
-                        img, self.deformed_grid, padding_mode="border"
-                    )
-                case _:
-                    # could also include pathologies...
-                    deformed[name] = self.apply_grid_sample(img, self.deformed_grid)
+            if name == "generation_labels":
+                pass
+            elif name in constants.filenames.segmentations:
+                # if self.config.deformation.deform_one_hots:
+                #     onehot = self.as_onehot(img)
+                #     onehot = self.apply_grid_sample(onehot, self.deformed_grid)
+                # else:
+                #     def_labels = self.apply_grid_sample(
+                #         img.float(), self.deformed_grid, mode="nearest"
+                #     )
+                #     onehot = self.as_onehot(def_labels)
+                # deformed["label"] = def_labels  # this should be handled...
+                # deformed["segmentation"] = onehot
+                deformed[name] = self.apply_grid_sample(
+                    img, self.deformed_grid, mode="nearest"
+                )
+            elif name in constants.filenames.dist_maps:
+                # NOTE padding mode in Eugenio's version was distances.amax()
+                deformed[name] = self.apply_grid_sample(
+                    img, self.deformed_grid, padding_mode="border"
+                )
+            else:
+                # could also include pathologies...
+                deformed[name] = self.apply_grid_sample(img, self.deformed_grid)
 
         return deformed
 
     def postprocess_images_(self, images):
         """In-place"""
-        if "segmentation" in images:
-            images["segmentation"] = self.as_onehot["segmentation"](images["segmentation"])
-
-        if "segmentation_brain" in images:
-            images["segmentation_brain"] = self.as_onehot["segmentation_brain"](images["segmentation_brain"])
+        for name, image in images.items():
+            if name in constants.filenames.segmentations:
+                images[name] = self.as_onehot[name](image)
 
         # for name in images:
         #     match name:
@@ -967,7 +943,7 @@ class Synthesizer(torch.nn.Module):
         if not self.do_task["flip"]:
             return deformed
 
-        raise NotImplementedError("Please verify that the label flipping works before using this feature.")
+        raise NotImplementedError("Please check this implementation before using!")
 
         for k, v in deformed.items():
             deformed[k] = self.flip_lr(v)
@@ -1021,12 +997,12 @@ class Synthesizer(torch.nn.Module):
         # return self.resize_to_fov(BFsmall[None]) # add channel dim
         # a = self.resize_to_fov(BFsmall[None]) # add channel dim
 
-        return monai.data.MetaTensor(torch.nn.functional.interpolate(
-            input=BFsmall[None].unsqueeze(0),
+        return torch.nn.functional.interpolate(
+            input=BFsmall[None, None],
             size=tuple(self.fov_size),
             mode="trilinear",
             align_corners=True,
-        ).squeeze(0), meta=meta)
+        )[0]
 
 
     def add_bias_field(self, image, bias_field):

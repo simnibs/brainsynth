@@ -2,7 +2,7 @@ import monai
 import torch
 
 
-class Reindex(monai.transforms.Transform):
+class Reindex(torch.nn.Module):
     def __init__(self, labels: torch.IntTensor):
         """Reindex data, e.g., [1,3,5,7] to [0,1,2,3]."""
         kwargs = dict(dtype=torch.int, device=labels.device)
@@ -14,15 +14,27 @@ class Reindex(monai.transforms.Transform):
         return self.reindexer[data]
 
 
-class AsDiscreteWithReindex(monai.transforms.Compose):
-    def __init__(self, labels) -> None:
-        super().__init__(
-            [
-                monai.transforms.EnsureType(dtype=torch.int),
-                Reindex(labels),
-                monai.transforms.AsDiscrete(to_onehot=len(labels)),
-            ]
-        )
+# class AsDiscreteWithReindex(monai.transforms.Compose):
+#     def __init__(self, labels) -> None:
+#         super().__init__(
+#             [
+#                 monai.transforms.EnsureType(dtype=torch.int),
+#                 Reindex(labels),
+#                 torch.nn.functional.one_hot(to_onehot=len(labels)),
+#             ]
+#         )
+
+class AsDiscreteWithReindex(torch.nn.Module):
+    def __init__(self, labels):
+        self.labels = labels.to(torch.int)
+        self.num_classes = len(self.labels)
+        self.reindex = Reindex(self.labels)
+
+    def forward(self, image):
+        dtype = image.dtype
+        return torch.nn.functional.one_hot(
+            self.reindex(image.to(torch.int)), self.num_classes
+        ).to(dtype)
 
 
 class SpatialCrop(monai.transforms.Transform):
@@ -64,7 +76,7 @@ class SpatialCrop(monai.transforms.Transform):
         return out
 
 
-class Resize(monai.transforms.Transform):
+class Resize(torch.nn.Module):
     def __init__(self, size: torch.Tensor | tuple | list):
         self.size = tuple(size)
         self.mode = "trilinear"
