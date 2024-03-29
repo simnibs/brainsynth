@@ -5,12 +5,13 @@ import torch
 class Reindex(torch.nn.Module):
     def __init__(self, labels: torch.IntTensor):
         """Reindex data, e.g., [1,3,5,7] to [0,1,2,3]."""
+        super().__init__()
         kwargs = dict(dtype=torch.int, device=labels.device)
         labels = labels.sort().values
         self.reindexer = torch.zeros(labels.amax() + 1, **kwargs)
         self.reindexer[labels] = torch.arange(len(labels), **kwargs)
 
-    def __call__(self, data: torch.IntTensor):
+    def forward(self, data: torch.IntTensor):
         return self.reindexer[data]
 
 
@@ -26,24 +27,30 @@ class Reindex(torch.nn.Module):
 
 class AsDiscreteWithReindex(torch.nn.Module):
     def __init__(self, labels):
+        super().__init__()
         self.labels = labels.to(torch.int)
         self.num_classes = len(self.labels)
         self.reindex = Reindex(self.labels)
 
     def forward(self, image):
-        dtype = image.dtype
-        return torch.nn.functional.one_hot(
-            self.reindex(image.to(torch.int)), self.num_classes
-        ).to(dtype)
+        shape = torch.tensor(image.shape[-3:])
+        n = shape.prod()
+        out = torch.zeros((self.num_classes, n), dtype=image.dtype)
+        out[self.reindex(image.to(torch.int)).ravel(), torch.arange(n)] = 1
+        return out.reshape(-1, *shape)
+        # return torch.nn.functional.one_hot(
+        #     self.reindex(image.to(torch.int)), self.num_classes
+        # ).to(dtype).permute(  )
 
 
-class SpatialCrop(monai.transforms.Transform):
+class SpatialCrop(torch.nn.Module):
     def __init__(
             self,
             in_size: torch.Tensor,
             out_size: torch.Tensor,
             out_center: torch.Tensor,
         ) -> None:
+        super().__init__()
         self.in_size = in_size
         self.out_size = out_size
         self.out_center = out_center
@@ -63,39 +70,37 @@ class SpatialCrop(monai.transforms.Transform):
             slice(0 - min(0, slc[0]), outs.item() - max(0, slc[1]-ins.item())) for slc,ins,outs in zip(slices, in_size, out_size)
         )
 
-    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
         out_size = torch.zeros(image.ndim, dtype=self.out_size.dtype)
         out_size[-3:] = self.out_size
         for i,s in enumerate(image.shape[:-3]):
             out_size[i] = s
-
-        out = monai.data.MetaTensor(
-            torch.zeros(tuple(out_size), dtype=image.dtype), meta=image.meta
-        )
+        out = torch.zeros(tuple(out_size), dtype=image.dtype)
         out[..., *self.slice_out] = image[..., *self.slice_in]
         return out
 
 
 class Resize(torch.nn.Module):
     def __init__(self, size: torch.Tensor | tuple | list):
+        super().__init__()
         self.size = tuple(size)
         self.mode = "trilinear"
 
-    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
         if image.ndim == 3:
             image = image[None]
         if image.ndim == 4:
             image = image[None]
 
-        return monai.data.MetaTensor(torch.nn.functional.interpolate(
+        return torch.nn.functional.interpolate(
             input=image,
             size=self.size,
             mode=self.mode,
             align_corners=True,
-        ).squeeze(0), meta=image.meta)
+        ).squeeze(0)
 
-class NormalizeIntensity(monai.transforms.Transform):
-    def __call__(self, image):
+class NormalizeIntensity(torch.nn.Module):
+    def forward(self, image):
         # r = image.aminmax()
         # return (image - r.min) / (r.max - r.min)
         ql = image.quantile(0.001)
@@ -122,7 +127,7 @@ class RandGaussianNoise(RandomizableTransform):
         self.mean = mean
         self.std_range = std_range
 
-    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
         super().randomize()
         if not self._do_transform:
             return image
@@ -139,7 +144,7 @@ class RandGammaTransform(RandomizableTransform):
     def _sample_gamma(self):
         return torch.exp(self.mean + self.std * torch.randn(1))
 
-    def __call__(self, image: monai.data.MetaTensor) -> monai.data.MetaTensor:
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
         super().randomize()
         if not self._do_transform:
             return image

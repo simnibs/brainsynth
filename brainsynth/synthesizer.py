@@ -62,6 +62,11 @@ import nibabel as nib
 iport torch
 
 A = np.eye(4)
+for i in y_true_img:
+    nib.Nifti1Image(y_true_img[i][0].numpy(),A).to_filename(f"/home/jesperdn/nobackup/brainnet_eval/{i}.nii")
+
+    nib.Nifti1Image(y_true_img["brainseg"].permute(1,2,3,0).numpy().astype(np.int32),A).to_filename(f"/home/jesperdn/nobackup/brainnet_eval/brainseg.nii")
+
 
 nib.Nifti1Image(y_true_img["synth"][0,0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_synth.nii.gz")
 nib.Nifti1Image(y_true_img["T1"][0,0].cpu().numpy(),A).to_filename("/home/jesperdn/nobackup/brainnet_eval/synth_norm.nii.gz")
@@ -322,27 +327,6 @@ class Synthesizer(torch.nn.Module):
             img_shape,
         )
 
-    def remove_batch_dim_(self, data):
-        for k, v in data.items():
-            if isinstance(v, monai.data.MetaTensor):
-                # assert v.shape[0] == 1, "Only a batch size of 1 is supported"
-                data[k] = v[0] if v.is_batch else v
-            else:
-                self.remove_batch_dim_(data[k])
-
-    def add_batch_dim_(self, data):
-        for k, v in data.items():
-            if isinstance(v, monai.data.MetaTensor):
-                data[k] = v if v.is_batch else v[None]
-            else:
-                self.add_batch_dim_(data[k])
-
-    # def add_batch_dim_surface(self, data):
-    #     # ADD BACK BATCH DIM !
-    #     for hemi, vv in data.items():
-    #         for surf, vvv in vv.items():
-    #             # if surf != "faces":
-    #             data[hemi][surf] = vvv[None]
 
     def initialize_state(self):
         self.do_task = dict(
@@ -360,7 +344,7 @@ class Synthesizer(torch.nn.Module):
         )
         self.set_photo_mode_spacing()
 
-    def forward(self, images, true_surfs, init_surfs, info, disable_synth=False):
+    def forward(self, images, true_surfs, init_surfs, info=None, disable_synth=False):
         """
 
         Only batch_size = 1 is supported!
@@ -387,20 +371,23 @@ class Synthesizer(torch.nn.Module):
 
             self.initialize_state()
 
-            if disable_synth:
-                self.do_task["intensity"] = False
+            # if disable_synth:
+            #     self.do_task["intensity"] = False
 
-            original_shape = info["shape"]
+            # original_shape = info["shape"]
+
+            # Get the spatial dimensions
+            original_shape = torch.tensor(next(iter(images.values())).shape[-3:])
+            original_resolution = torch.tensor([1,1,1])
+
             self.has_surfaces = len(true_surfs) > 0
 
-            roi_center, roi_size = self.get_roi_center_size(
-                true_surfs, info["bbox"], original_shape
-            )
+            # roi_center, roi_size = self.get_roi_center_size(
+            #     true_surfs, info["bbox"], original_shape
+            # )
 
-            if not self.static_fov:
-                self.set_grid_from_fov(roi_size)
 
-            deformed_origin = roi_center
+            deformed_origin = self.center_from_shape(original_shape)
 
             self.randomize_linear_transform()
             self.randomize_nonlinear_transform()
@@ -412,20 +399,17 @@ class Synthesizer(torch.nn.Module):
             images = self.preprocess_images(images)
             deformed = self.transform_images(images)
             deformed = self.postprocess_images_(deformed)
-            deformed |= self.synthesize_image(images["generation"], info["resolution"])
+            deformed |= self.synthesize_image(images["generation_labels"], original_resolution)
             deformed = self.blend_images(deformed)
             deformed = self.flip_images(deformed)
 
-            out_shape = next(iter(deformed.values())).shape
-            # assert roi_size == out_shape, "is this true..?"
-
             # Process surfaces
             true_surfs = self.transform_surfaces(true_surfs, deformed_origin)
-            true_surfs = self.flip_surfaces(true_surfs, out_shape)
+            true_surfs = self.flip_surfaces(true_surfs)
 
             # Process template surfaces
             init_surfs = self.transform_surfaces(init_surfs, deformed_origin)
-            init_surfs = self.flip_surfaces(init_surfs, out_shape)
+            init_surfs = self.flip_surfaces(init_surfs)
 
             # HANDLE THIS INTERNALLY INSTEAD
 
@@ -434,6 +418,7 @@ class Synthesizer(torch.nn.Module):
     def blend_images(self, deformed):
         if not ("synth" in deformed and self.do_task["blend"]):
             return deformed
+        raise NotImplementedError("Please check before using this feature")
 
         i = torch.randint(0, len(self.config.intensity.blend.images), (1,))
         img = self.config.intensity.blend.images[i]
@@ -688,7 +673,7 @@ class Synthesizer(torch.nn.Module):
         #         images[k] = self.scale_intensity(images[k])
 
         for k,image in images.items():
-            if k in constants.filenames.dist_maps:
+            if k in constants.dist_maps:
                 image /= self.scale_distance
 
         # Decide if we're simulating ex vivo (and possibly a bag) or photos
@@ -877,7 +862,7 @@ class Synthesizer(torch.nn.Module):
         for name, img in images.items():
             if name == "generation_labels":
                 pass
-            elif name in constants.filenames.segmentations:
+            elif name in constants.segmentations:
                 # if self.config.deformation.deform_one_hots:
                 #     onehot = self.as_onehot(img)
                 #     onehot = self.apply_grid_sample(onehot, self.deformed_grid)
@@ -891,7 +876,11 @@ class Synthesizer(torch.nn.Module):
                 deformed[name] = self.apply_grid_sample(
                     img, self.deformed_grid, mode="nearest"
                 )
-            elif name in constants.filenames.dist_maps:
+            elif name in constants.defacing_masks:
+                deformed[name] = self.apply_grid_sample(
+                    img, self.deformed_grid, mode="nearest"
+                )
+            elif name in constants.dist_maps:
                 # NOTE padding mode in Eugenio's version was distances.amax()
                 deformed[name] = self.apply_grid_sample(
                     img, self.deformed_grid, padding_mode="border"
@@ -905,7 +894,7 @@ class Synthesizer(torch.nn.Module):
     def postprocess_images_(self, images):
         """In-place"""
         for name, image in images.items():
-            if name in constants.filenames.segmentations:
+            if name in constants.segmentations:
                 images[name] = self.as_onehot[name](image)
 
         # for name in images:
@@ -926,7 +915,7 @@ class Synthesizer(torch.nn.Module):
             return {}
 
         # Generate (log-transformed) bias field
-        biasfield = self.synthesize_bias_field(gen_label.meta)
+        biasfield = self.synthesize_bias_field()
         # biasfield = monai.transforms.RandBiasField(degree=5, coeff_range=(0,0.1), prob=0.5)
 
 
@@ -956,7 +945,7 @@ class Synthesizer(torch.nn.Module):
 
         return deformed
 
-    def flip_surfaces(self, surfaces, shape):
+    def flip_surfaces(self, surfaces):
         if not self.has_surfaces or not self.do_task["flip"]:
             return surfaces
 
@@ -964,7 +953,7 @@ class Synthesizer(torch.nn.Module):
             s[:, 0] *= -1.0
             s[:, 0] += width - 1.0
 
-        width = shape[1]  # assumes C,W,H,D
+        width = self.fov_size[0]  # assumes C,W,H,D
         for hemi, surfs in surfaces.items():
             if isinstance(surfs, dict):
                 for s in surfs:
@@ -979,7 +968,7 @@ class Synthesizer(torch.nn.Module):
         # which is also the case for rh compared to lh.
         return {HEMI_FLIP[h]: v for h, v in surfaces.items()}
 
-    def synthesize_bias_field(self, meta):
+    def synthesize_bias_field(self):
         """Synthesize a log-transformed bias field."""
         bf = self.config.biasfield
 
@@ -994,15 +983,7 @@ class Synthesizer(torch.nn.Module):
         BFsmall = bf.std_min + (bf.std_max - bf.std_min) * torch.rand(1) * torch.randn(
             *size_BF_small
         )
-        # return self.resize_to_fov(BFsmall[None]) # add channel dim
-        # a = self.resize_to_fov(BFsmall[None]) # add channel dim
-
-        return torch.nn.functional.interpolate(
-            input=BFsmall[None, None],
-            size=tuple(self.fov_size),
-            mode="trilinear",
-            align_corners=True,
-        )[0]
+        return self.resize_to_fov(BFsmall)
 
 
     def add_bias_field(self, image, bias_field):

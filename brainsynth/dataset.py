@@ -141,7 +141,7 @@ def load_dataset_subjects(filename):
 class AugmentedDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        data_dir: str | Path,
+        dataset_dir: str | Path,
         dataset_name: str,
         subjects: str | list | tuple,
         images: list | tuple,
@@ -152,9 +152,16 @@ class AugmentedDataset(torch.utils.data.Dataset):
     ):
         """
 
-        Will read the specified surface resolution (and hemisphere depending on
+        Will read the specified surface resolution (and hemisphere dependin3g on
         bounding box argument)
 
+
+        datasets_dir = "/mrhome/jesperdn/INN_JESPER/nobackup/projects/brainnet/4dk/maps"
+        datasets_names = ("HCP", "Buckner40")
+        datasets_subjects = ("/mrhome/jesperdn/INN_JESPER/nobackup/projects/brainnet/4dk/HCP.subjects.train.txt", "/mrhome/jesperdn/INN_JESPER/nobackup/projects/brainnet/4dk/Buckner40.subjects.train.txt")
+        dataset_kwargs = dict(images=["generation_labels", "brainseg", "t1w"], surface_resolution=None, alt_images=["t1w"])
+        dataloader_kwargs=dict(num_workers=1, prefetch_factor=1)
+        dl = create_dataloader(datasets_dir, datasets_names, datasets_subjects, dataset_kwargs=dataset_kwargs, dataloader_kwargs=dataloader_kwargs)
 
         Assumes that datasets are stored data_dir
 
@@ -196,7 +203,7 @@ class AugmentedDataset(torch.utils.data.Dataset):
             initial vertices, and returns a dictionary of transformed images,
             surfaces, and initial vertices (e.g., a preconfigured Synthesizer).
         """
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(dataset_dir)
         self.dataset_name = dataset_name
         self.subjects = load_dataset_subjects(subjects) if isinstance(subjects, (Path, str)) else subjects
 
@@ -250,15 +257,16 @@ class AugmentedDataset(torch.utils.data.Dataset):
 
 
     def get_image_filename(self, subject, image):
-        return Path(f"{self.dataset_name}.{subject}.{image}")
+        return self.data_dir / f"{self.dataset_name}.{subject}.{image}"
 
 
     def get_surface_filename(self, subject, surface):
-        return Path(f"{self.dataset_name}.{subject}.{surface}")
+        return self.data_dir / f"{self.dataset_name}.{subject}.{surface}"
 
 
     def load_image(self, filename, dtype):
-        return atleast_4d(torch.tensor(nib.load(filename).dataobj[:], dtype=dtype))
+        # Images seem to be (x,y,z,c) but we want (c,x,y,z)
+        return atleast_4d(torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype).squeeze())
 
 
     def load_images(self, subject):

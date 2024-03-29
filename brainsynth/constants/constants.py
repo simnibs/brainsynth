@@ -17,8 +17,8 @@ labeling_scheme = LabelingScheme(
 )
 
 # neutral labels are labels that are not lateralized
-NNeutralLabels = namedtuple("NNeutralLabels", ("incl_csf", "excl_csf", "wmgm"))
-n_neutral_labels = NNeutralLabels(incl_csf=7, excl_csf=6, wmgm=1)
+NNeutralLabels = namedtuple("NNeutralLabels", ("brainseg", "brainseg_with_extracerebral"))
+n_neutral_labels = NNeutralLabels(brainseg=0, brainseg_with_extracerebral=0)
 
 generation_labels_kmeans = (12, 13, 14, 15)
 
@@ -37,8 +37,8 @@ Images = namedtuple(
 MetaData = namedtuple("ImageData", ("filename", "dtype", "defacingmask", ))
 images = Images(
     brain_dist_map = MetaData("brain_dist_map.nii", torch.float, None),
-    brainseg=MetaData("brainseg.nii", torch.uint8, None),
-    brainseg_with_extracerebral=MetaData("brainseg_with_extracerebral.nii", torch.uint8, None),
+    brainseg=MetaData("brainseg.nii", torch.float, None),
+    brainseg_with_extracerebral=MetaData("brainseg_with_extracerebral.nii", torch.float, None),
     ct=MetaData("CT.nii", torch.float, "ct_mask"),
     ct_mask=MetaData("CT.defacingmask.nii", torch.bool, None),
     flair=MetaData("FLAIR.nii", torch.float, "ct_mask"),
@@ -52,14 +52,14 @@ images = Images(
     mni_reg_y=MetaData("mni_reg.y.nii", torch.float, None),
     mni_reg_z=MetaData("mni_reg.z.nii", torch.float, None),
     t1w=MetaData("T1w.nii", torch.float, "t1w_mask"),
-    t1w_mask=MetaData("T1w.defacingmask.nii", torch.bool, None),
+    t1w_mask=MetaData("T1w.defacingmask.nii", torch.float, None),
     t2w=MetaData("T2w.nii",torch.float,"t2w_mask"),
-    t2w_mask=MetaData("T2w.defacingmask.nii", torch.bool, None),
+    t2w_mask=MetaData("T2w.defacingmask.nii", torch.float, None),
 )
 
 dist_maps = {"lp_dist_map", "lw_dist_map", "rp_dist_map", "rw_dist_map"}
 segmentations = {"brainseg", "brainseg_with_extracerebral"}
-
+defacing_masks = {"ct_mask", "flair_mask", "t1w_mask", "t2w_mask"}
 
 surfaces = {
     (res,hemi): f"surface.{res}.{hemi}.pt" for res,hemi in itertools.product(SURFACE_RESOLUTIONS, HEMISPHERES)
