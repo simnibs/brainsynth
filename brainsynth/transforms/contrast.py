@@ -65,7 +65,7 @@ class SynthesizeIntensityImage(BaseTransform):
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
         label = label.round().long()
-        return self.mu[label] + self.sigma_sigma[label] * torch.randn(
+        return self.mu[label] + self.sigma[label] * torch.randn(
             label.shape, device=self.device
         )
 
@@ -86,13 +86,19 @@ class SynthesizeIntensityImage(BaseTransform):
             isv = torch.zeros(Gv.shape)
             # e.g., 2.25 -> 75 % WM
             pw = (Gv <= 3) * (3 - Gv)
-            isv += pw * self.mu[2] + pw * self.sigma[2] * torch.randn(Gv.shape, device=self.device)
+            isv += pw * self.mu[2] + pw * self.sigma[2] * torch.randn(
+                Gv.shape, device=self.device
+            )
             # e.g., 2.75 -> 25 % GM and 3.25 -> 75 % GM
             pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
-            isv += pg * self.mu[3] + pg * self.sigma[3] * torch.randn(Gv.shape, device=self.device)
+            isv += pg * self.mu[3] + pg * self.sigma[3] * torch.randn(
+                Gv.shape, device=self.device
+            )
             # e.g., 3.25 -> 25 CSF
             pcsf = (Gv >= 3) * (Gv - 3)
-            isv += pcsf * self.mu[4] + pcsf * self.sigma[4] * torch.randn(Gv.shape, device=self.device)
+            isv += pcsf * self.mu[4] + pcsf * self.sigma[4] * torch.randn(
+                Gv.shape, device=self.device
+            )
 
             # this will also kill the random gaussian noise in the PV areas
             image[mask] = isv
@@ -187,7 +193,7 @@ class RandGammaTransform(RandomizableTransform):
 class RandBiasfield(RandomizableTransform):
     def __init__(
         self,
-        size: torch.Size | torch.Tensor,
+        size: tuple | list | torch.Size | torch.Tensor,
         scale_min: float,
         scale_max: float,
         std_min: float,
@@ -195,36 +201,36 @@ class RandBiasfield(RandomizableTransform):
         photo_mode: bool = False,
         interpolate_kwargs: dict | None = None,
         prob: float = 1.0,
+        device: None | torch.device = None,
     ):
-        super().__init__(prob)
+        super().__init__(prob, device)
 
-        self.size = torch.tensor(size)
-        self.scale_min = scale_min
-        self.scale_max = scale_max
-        self.std_min = std_min
-        self.std_max = std_max
+        self.size = torch.tensor(size, device=self.device)
+        self.photo_mode = photo_mode
         self.interpolate_kwargs = interpolate_kwargs or dict(
             mode="trilinear", align_corners=True
         )
 
-        self.photo_mode = photo_mode
-
         if self.should_apply_transform():
-            self.generate_biasfield()
+            self.generate_biasfield(scale_min, scale_max, std_min, std_max)
 
-    def generate_biasfield(self):
+    def generate_biasfield(
+        self, scale_min: float, scale_max: float, std_min: float, std_max: float
+    ):
         """Synthesize a bias field."""
 
-        bf_scale = self.scale_min + torch.rand(1) * (self.scale_max - self.scale_min)
+        bf_scale = scale_min + torch.rand(1, device=self.device) * (
+            scale_max - scale_min
+        )
         size_BF_small = torch.round(bf_scale * self.size).to(torch.int)
 
-        if self.self.photo_mode:
+        if self.photo_mode:
             size_BF_small[1] = torch.round(self.size[1] / self.spacing).to(torch.int)
 
         # reduced size
-        BFsmall = self.std_min + (self.std_max - self.std_min) * torch.rand(
-            1
-        ) * torch.randn(*size_BF_small)
+        BFsmall = std_min + (std_max - std_min) * torch.rand(
+            1, device=self.device
+        ) * torch.randn(*size_BF_small, device=self.device)
 
         # Resize
         self.biasfield = torch.nn.functional.interpolate(

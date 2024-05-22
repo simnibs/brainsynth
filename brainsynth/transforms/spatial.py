@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
@@ -43,6 +45,14 @@ class SpatialCrop(BaseTransform):
         return out
 
 
+class TranslationTransform(BaseTransform):
+    def __init__(self, translation: torch.Tensor, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.translation = translation
+
+    def forward(self, x: torch.Tensor):
+        return x + self.translation
+
 class RandLinearTransform(RandomizableTransform):
     def __init__(
         self,
@@ -56,6 +66,7 @@ class RandLinearTransform(RandomizableTransform):
 
         if not self.should_apply_transform():
             self.trans = torch.eye(3, device=self.device)
+            self.trans_inv = self.trans
             self.scale = 1.0
             return
 
@@ -74,6 +85,7 @@ class RandLinearTransform(RandomizableTransform):
         scaling_factor_distances = torch.prod(scalings) ** 0.33333333333
 
         self.trans = self.generate_transform(rotations, shears, scalings)
+        self.trans_inv = self.inverse()
         self.scale = scaling_factor_distances
 
     def generate_transform(
@@ -122,10 +134,14 @@ class RandLinearTransform(RandomizableTransform):
 
         return A
 
-    def forward(self, grid):
+    def inverse(self):
+        return torch.linalg.inv(self.trans)
+
+    def forward(self, grid, inverse: bool = False):
         """`grid` has coordinates in the last dimension!"""
         if self.should_apply_transform():
-            return grid @ self.trans.T
+            A = self.trans_inv if inverse else self.trans
+            return grid @ A.T
         else:
             return grid
 
@@ -156,16 +172,16 @@ class RandNonlinearTransform(RandomizableTransform):
         """
         super().__init__(prob, device)
 
-        if not self.should_apply_transform():
-            self.trans = dict(forward=None, backward=None)
-            return
-
         self.out_size = out_size
         self.scale_min = scale_min
         self.scale_max = scale_max
         self.std_max = std_max
         self.integrate_svf = integrate_svf
         self.n_steps = n_steps
+
+        if not self.should_apply_transform():
+            self.trans = dict(forward=None, backward=None)
+            return
 
         nonlin_scale = scale_min + torch.rand(1) * (scale_max - scale_min)
         size_F_small = torch.round(nonlin_scale * out_size).to(torch.int)
@@ -221,14 +237,59 @@ class RandNonlinearTransform(RandomizableTransform):
 
     def forward(self, grid, direction="forward"):
         if self.should_apply_transform():
-            nonlin_deform = self.channel_last(self.forward_trans)
-            return grid + self.forward_trans
+            return grid + self.channel_last(self.trans[direction])
         else:
             return grid
 
 
+class DeformSurfaces(BaseTransform):
+    def __init__(self, linear_trans, nonlinear_trans, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.linear_trans = linear_trans
+        self.nonlinear_trans = nonlinear_trans
+
+    def deform_surface(self, s):
+        surface_center = 0.5 * (s.amax(1) - s.amin(1))
+        image_center = center_from_shape(align_corners = True)
+
+        # center around (0,0,0)
+        s -= surface_center # s -= self.translation
+
+        s = self.linear_trans(s, inverse=True)
+
+        # center in output FOV
+        s += image_center # s += self.center
+
+        if self.nonlinear_trans.should_apply_transform():
+            sample = GridSample(s, self.nonlinear_trans.out_size)
+            s += sample(self.nonlinear_trans.trans["backward"])
+
+        if (smin := s.amin() < 0) or torch.any(smax := s.amax(0) > self.fov_size):
+            warnings.warn(
+                (
+                    "Cortical surface is partly outside of FOV. BBOX of FOV is "
+                    f"{(0,0,0), self.fov_size}. BBOX of surface is "
+                    f"{smin(0), smax(0)}"
+                )
+            )
+
+        return s
+
+    def forward(self, surface: dict | torch.Tensor):
+        if isinstance(surface, torch.Tensor):
+            return self.deform_surface(surface)
+        else:
+            return {k: self.forward(v) for k,v in surface.items()}
+
+def center_from_shape(size, align_corners=True):
+    if align_corners:
+        return 0.5 * (size - 1.0)
+    else:
+        return 0.5 * size
+
 class Resize(BaseTransform):
     def __init__(self, size: torch.Tensor | tuple | list, mode="bilinear"):
+        super().__init__()
         self.size = tuple(size)
         self.mode = mode or "bilinear"  # trilinear when `image` is 5-D
 
@@ -284,41 +345,90 @@ class Resize(BaseTransform):
 #         return {self.flip_hemi[h]: v for h, v in surfaces.items()}
 
 
+class ImageGrid(BaseTransform):
+    def __init__(self, size, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.size = size
+        self.grid = torch.stack(
+            torch.meshgrid(
+                [
+                    torch.arange(s, dtype=torch.float, device=self.device)
+                    for s in self.size
+                ],
+                indexing="ij",
+            ),
+            dim=-1,
+        )
+
+    def forward(self):
+        return self.grid
+
+
+class CenterGrid(BaseTransform):
+    def __init__(
+        self, size, align_corners: bool = True, device: None | torch.device = None
+    ) -> None:
+        super().__init__(device)
+        self.align_corners = align_corners
+        self.size = torch.tensor(size, device=self.device)
+        if self.align_corners:
+            self.center = 0.5 * (self.size - 1.0)
+        else:
+            self.center = 0.5 * self.size
+
+    def forward(self, grid):
+        return grid - self.center
+
+
+class NormalizeGrid(CenterGrid):
+    def __init__(
+        self, size, align_corners: bool = True, device: None | torch.device = None
+    ) -> None:
+        super().__init__(size, align_corners, device)
+
+    def forward(self, grid):
+        return super().forward(grid) / self.center
+
+
 class GridSample(BaseTransform):
-    def __init__(self, grid: torch.Tensor, out_size: torch.Tensor):
+    def __init__(
+        self,
+        grid: torch.Tensor,
+        size: None | torch.Tensor = None,
+        assume_normalized: bool = False,
+    ):
         self.grid = grid
+        if not assume_normalized:
+            assert size is not None, "`size` must be provided when `assume_normalized = False`"
+        self.size = tuple(size) if size is not None else size
+        self.assume_normalized = assume_normalized
+
         self.grid_ndim = len(self.grid.shape)
         assert self.grid_ndim in {2, 4}
 
-        self.out_size = out_size
-
         # normalized grid
-        self.norm_grid = self.normalize_coordinates()
+        if self.assume_normalized:
+            self.norm_grid = grid
+        else:
+            self.norm_grid = NormalizeGrid(self.size, align_corners=True)(grid)
         if self.grid_ndim == 2:
             self.norm_grid = self.norm_grid[None, :, None, None]  # 1,W,1,1,3
         elif self.grid_ndim == 4:
             self.norm_grid = self.norm_grid[None]  # 1,W,H,D,3
 
-    def center_from_shape(self):
-        return 0.5 * (self.out_size - 1.0)  # -1.0 because of align_corners=True
-
-    def normalize_coordinates(self):
-        c = self.center_from_shape()
-        return (self.grid - c) / c
-
     def forward(self, image, **kwargs):
         # image : (C, W, H, D)
-        # grid  : (V, 3) or (W, H, D, 3)
+        # grid  : (V, 3) or (WW, HH, DD, 3)
         if self.grid is None:
             return image
 
+        if not self.assume_normalized:
+            assert (
+                image[-3:] == self.size
+            ), f"Expected image with spatial dimensions {self.size} but got {tuple(image[-3:])}."
+
         image_ndim = len(image.shape)
         assert image_ndim in {3, 4}
-
-        assert (
-            self.out_size == image.shape[-3:]
-        ), f"Wrong image size, expected {self.out_size} but got {image.shape[-3:]}"
-        # shape = torch.tensor(image.shape[-3:])
 
         # image
         # [n,c,]x,y,z -> n,c,z,y,x (!)

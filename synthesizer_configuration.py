@@ -3,14 +3,38 @@ import torch
 
 from brainsynth.transforms import *
 
-device = torch.device("cuda")
 
+mapped_inputs = dict(
+    image=dict(
+        T1w=torch.rand((10,10,10)),
+        T2w=10*torch.rand((10,10,10)),
+        generation=torch.randint(0, 20, (128,192,176)),
+        # FLAIR=torch.rand((10,10,10))
+    ),
+    surface=dict(lh=dict(white=3, pial=4)),
+    initial_vertices={},
+    state=dict(
+        in_res = torch.tensor([1,1,1]),
+        out_res = torch.tensor([1,1,1]),
+        center=torch.tensor([3,4,5]),
+        available_contrasts=("image:T1w", "image:T2w", "image:FLAIR"),
+        alternative_contrasts=("image:T1w", "image:T2w", "image:FLAIR", "image:CT")
+    )
+)
 
-mytrans = Module(transformation, args, kwargs)
-mytrans1 = Module(transformation1, args, kwargs)
-mytrans2 = Module(transformation2, args, kwargs)
+mytrans = PipelineModule(transformation, args, kwargs)
+mytrans1 = PipelineModule(transformation1, args, kwargs)
+mytrans2 = PipelineModule(transformation2, args, kwargs)
 
 mypipeline = Pipeline(mytrans, mytrans1, mytrans2)
+
+
+
+
+device = torch.device("cuda")
+out_size = (128, 192, 176)
+out_center = "lh"
+
 
 RandSkullStrip = RandMaskFromLabelImageRemove(
     InputSelector("image:segmentation"), labels = (1,2,3,4),
@@ -22,119 +46,169 @@ OneHotEncode = AsDiscreteWithReindex(labels)
 # initialization like the other classes. InputSelector is initialized once at
 # the start of augmentation.
 
-photo_mode = RandomChoice((False, True), prob=(0.5, 0.5))()
+photo_mode = RandomChoice((False, True))()
 
-spatial_crop = Module(
+spatial_crop = PipelineModule(
     SpatialCrop,
-    "input:state:in_size",
-    "input:state:out_size",
-    "input:state:center",
+    InputSelector("state:in_size"),
+    # "input:state:in_size",
+    out_size,
+    InputSelector("state:center"),
+    # "input:state:center",
 )
-linear_trans = RandLinearTransform(
+
+intensity_normalization = IntensityNormalization()
+
+nonlinear_transform = RandNonlinearTransform(
+    out_size,
+    scale_min = 0.03,
+    scale_max = 0.06,
+    std_max = 4.0,
+    prob = 0.0,
+    device = device,
+)
+linear_transform = RandLinearTransform(
     max_rotation = 15,
     max_scale = 0.2,
     max_shear = 0.2,
     prob = 0.0,
     device = device,
 )
-nonlinear_trans = Module(
-    RandNonlinearTransform,
-    "input:state:out_size",
-    scale_min = 0.03,
-    scale_max = 0.06,
-    std_max = 4,
-    probability = 0.0,
-    device = device,
+translation_transform =
+
+# Compute state variables
+
+# Initial state variables:
+#   in_size     input image size (spatial dimensions)
+#   in_res      input image resolution
+#   center      center of the output wrt. the input
+#   grid        undistorted output grid
+
+STATE = dict(
+    resampling_grid = Pipeline(
+        InputSelector("state:grid"),
+        CenterGrid(),
+        nonlinear_transform,
+        linear_transform,
+        PipelineModule(
+            TranslationTransform,
+            InputSelector("state:center"),
+        )
+    )
 )
 
-intensity_normalization = Module(IntensityNormalization)
+GridSample(InputSelector("state:resampling_grid"))
+
+"""
+Pipeline provides `mapped_inputs` which are needed when calling InputSelector.
+Hence, all InputSelectors must be used *in* a Pipeline.
+
+PipelineModule defers class initialization until runtime and provides `mapped_inputs`
+at class instatiation. Consequently, all PipelineModules must be used *in* a
+Pipeline.
+By deferring initialization until runtime, PipelineModule allows transforms to be
+initialized with arguments whose values are only available at runtime.
 
 
-pipelines = dict(
+"""
+
+# IMAGE PIPELINES
+
+OUTPUT = dict(
     T1w = Pipeline(
-        Module(InputSelector, "image:T1w"),
+        InputSelector("image:T1w"),
         intensity_normalization,
     ),
     T2w = Pipeline(
-        Module(InputSelector, "image:T2w"),
+        InputSelector("image:T2w"),
         intensity_normalization,
+    ),
+    segmentation = Pipeline(
+        InputSelector("image:segmentation"),
+        OneHotEncoding(num_classes)
     ),
     synth = Pipeline(
         RandomChoice(
             [
+                # Synthesize image
                 Pipeline(
-                    Module(InputSelector, "image:generation"),
-                    Module(
-                        SynthesizeIntensityImage,
-                        photo_mode="input:state:photo_mode"
+                    InputSelector("image:generation"),
+                    SynthesizeIntensityImage(
+                        mu_offset = 25.0,
+                        mu_scale = 200.0,
+                        sigma_offset = 0.0,
+                        sigma_scale = 10.0,
+                        add_partial_volume = True,
+                        photo_mode = photo_mode,
+                        min_cortical_contrast = 25.0,
+                        device = device,
                     ),
                     # RandGaussianNoise(),
-                    Module(RandGammaTransform, mean = 0.0, std = 1.0, prob = 0.75),
-                    Module(RandBiasfield)
+                    RandGammaTransform(
+                        mean = 0.0, std = 1.0, prob = 0.75
+                    ),
+                    RandBiasfield(
+                        out_size,
+                        scale_min = 0.02,
+                        scale_max = 0.04,
+                        std_min = 0.1,
+                        std_max = 0.6,
+                        photo_mode = photo_mode,
+                        prob = 0.9,
+                    ),
                 ),
+                # Select actual image
                 Pipeline(
-                    Module(
+                    # InputSelector(
+                    #     RandomChoice(["image:T1w", "image:T2w"], prob=(0.5, 0.5))(),
+                    # )
+                    # select available contrasts...
+                    PipelineModule(
                         InputSelector,
-                        RandomChoice(["image:T1w", "image:T2w"], prob=(0.5, 0.5))(),
-                    )
+                        PipelineModule(
+                            RandomChoice,
+                            InputSelector("state:available_contrasts"),
+                        ),
+                    ),
                 )
             ], prob=(0.5, 0.5)
         ),
         # Resolution
-        Module(
+        PipelineModule(
             RandResolution,
-            "input:state:out_size",
-            "input:state:in_res",
-            "input:state:out_res",
+            out_size,
+            InputSelector("state:in_res"),
+            InputSelector("state:out_res"),
             prob = 0.75,
         ),
         intensity_normalization,
-    )
+    ),
+
+
+    surfaces = Pipeline(
+        InputSelector("surface"),
+        # ...
+    ),
 )
-
-
-inp_sel = InputSelector(
-    images=dict(
-        T1w=torch.rand((10,10,10)),
-        T2w=10*torch.rand((10,10,10)),
-        FLAIR=torch.rand((10,10,10))),
-    surfaces=dict(lh=dict(white=3, pial=4)),
-    initial_vertices={},
-    state=dict(
-        fov=torch.tensor([4,5,6]),
-        center=torch.tensor([3,4,5]),
-        available_contrasts=("image:T1w", "image:T2w", "image:FLAIR"),
-    )
-)
-
-
-
-p = Pipeline(
-    Init("InputSelector", "image:T1w"),
-    Init(NormalizeIntensity, 0.1, high=0.9),
-)
-p.initialize(inp_sel)
-p()
-
 
 
 
 
 p = Pipeline(
-    # Module(
+    # PipelineModule(
     #     "InputSelector",
     #     RandomChoice("image:T1w", "image:T2w", prob=(0.5, 0.5))(),
     # ),
-    Module(
+    PipelineModule(
         "InputSelector",
-        Module(
+        PipelineModule(
             RandomChoice,
             "input:state:available_contrasts",
             prob=(0.5, 0.3, 0.2)
         ),
     ),
     NormalizeIntensity(0.1, 0.9),
-    Module(
+    PipelineModule(
         SpatialCrop,
         in_size=torch.tensor([10,10,10]),
         out_size="input:state:fov",
@@ -152,25 +226,6 @@ p()
 T1w = SequentialTransform("input:image:T1w", normintensity)
 distances = SequentialTransform("input:image:distblabla", Scaler("input:state:scale"))
 
-synth = SequentialTransform(
-    Init(
-        RandomChoice,
-        SequentialTransform(
-            Init("input:image:generation"),
-            Init(SynthesizeIntensityImage),
-            Init(RandGaussianNoise),
-            Init(RandGammaTransform),
-            Init(RandBiasfield),
-        ),
-        Init(
-            RandomChoice,
-            "input:image:T1w",
-            "input:image:T2w",
-            prob = (0.5, 0.5)),
-        prob = (0.9, 0.1),
-    ),
-    NormalizeIntensity(),
-)
 
 
 out = {}
@@ -183,35 +238,11 @@ for pipeline in pipelines:
 
 pipelines = OrderedDict(
 
-    synth = [
-        RandomChoice(
-            SequentialTransform([
-                InputSelector("image:generation"),
-                SynthesizeIntensityImage(),
-                RandGaussianNoise(),
-                RandGammaTransform(),
-                RandBiasfield(),
-            ]),
-            RandomChoice("input:image:T1w", "input:image:T2w", prob = (0.5, 0.5)),
-            prob = (0.9, 0.1),
-        ),
-        NormalizeIntensity()
-    ],
 
-    T1w = Pipeline(
-        "image:T1w",
-        NormalizeIntensity(),
-        skullstrip,
-    ),
 
     T1mask = [
         InputSelector("image:T1-mask"),
         skullstrip,
-    ],
-
-    segmentation = [
-        InputSelector("image:segmentation"),
-        OneHotEncoding(),
     ],
 
     distances = [
@@ -219,10 +250,7 @@ pipelines = OrderedDict(
         Scaler(InputSelector("state:scale")),
     ],
 
-    surfaces = SequentialTransform(
-        InputSelector("surface"),
-        # ...
-    ),
+
 
     initial_vertices = SequentialTransform(
         InputSelector("initial_vertices"),
