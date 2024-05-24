@@ -2,6 +2,7 @@ from collections import namedtuple
 
 HEMISPHERES = ("lh", "rh")
 SURFACE_RESOLUTIONS = (0, 1, 2, 3, 4, 5, 6)
+SURFACES = ("white", "pial")
 
 # Labeling schemes
 LabelingScheme = namedtuple(
@@ -21,3 +22,7 @@ n_neutral_labels = NNeutralLabels(incl_csf=7, excl_csf=6, wmgm=1)
 #     excl_brainstem_cerebellum: [0, 2, 3, 4,       10, 11, 12, 13,     17, 18, 26, 28, 77]
 #     incl_brainstem_cerebellum: [0, 2, 3, 4, 7, 8, 10, 11, 12, 13, 16, 17, 18, 26, 28, 77]
 #     n_neutral_labels: 6
+
+
+MappedInputKeys = namedtuple("MappedInputKeys", ["image", "surface", "initial_vertices", "state"])
+mapped_input_keys = MappedInputKeys("image", "surface", "initial_vertices", "state")

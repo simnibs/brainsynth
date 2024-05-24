@@ -2,35 +2,62 @@ from typing import Type
 
 import torch
 
-from .base import BaseTransform, RandomChoice
+from .base import BaseTransform, EnsureDevice, EnsureDType, RandomChoice
 from .contrast import (
     IntensityNormalization,
     RandBiasfield,
     RandBlendImages,
     RandGammaTransform,
+    RandMaskRemove,
     SynthesizeIntensityImage,
 )
 from .spatial import (
+    CenterFromString,
+    Grid,
+    GridCentering,
+    GridNormalization,
+    GridSample,
     RandLinearTransform,
     RandNonlinearTransform,
     RandResolution,
     SpatialCrop,
+    SpatialSize,
+    SurfaceBoundingBox,
+    SurfaceDeformation,
+    TranslationTransform,
 )
-from .label import OneHotEncoding
+from .label import MaskFromLabelImage, OneHotEncoding
+from .misc import ExtractDictKeys, Intersection, ServeValue, Uniform
+
+from brainsynth.constants.constants import mapped_input_keys as mikeys
+
+
+class InputSelectorError(Exception):
+    pass
+
 
 class InputSelector(torch.nn.Module):
-    def __init__(self, selection: str):
+    def __init__(self, *args):
         super().__init__()
-        self.osel = selection.split(":")
+        self.selection = args
 
     def recursive_selection(self, mapped_input, keys):
-        selection = mapped_input[keys[0]]
+        try:
+            selection = mapped_input[keys[0]]
+        except KeyError:
+            raise InputSelectorError(
+                f"No key `{keys[0]}` in `mapped_input` with keys {tuple(mapped_input.keys())}."
+            )
+
         if len(keys) == 1:
             return selection
         else:
             return self.recursive_selection(selection, keys[1:])
 
-    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+    def forward(
+        self,
+        mapped_inputs: dict[str, torch.Tensor] | dict[str, dict[str, torch.Tensor]],
+    ):
         """
             images: dict[str, torch.Tensor],
             surfaces: dict[str, dict[str, torch.Tensor]],
@@ -55,7 +82,49 @@ class InputSelector(torch.nn.Module):
         #     initial_vertices=initial_vertices,
         #     state=state,
         # )
-        return self.recursive_selection(mapped_inputs[self.osel[0]], self.osel[1:])
+        if len(self.selection) == 0:
+            return mapped_inputs
+        elif len(self.selection) == 1:
+            return mapped_inputs[self.selection[0]]
+        else:
+            return self.recursive_selection(
+                mapped_inputs[self.selection[0]], self.selection[1:]
+            )
+
+
+class SelectImage(InputSelector):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.image = mikeys.image
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.image])
+
+
+class SelectInitialVertices(InputSelector):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.image = mikeys.initial_vertices
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.image])
+
+
+class SelectState(InputSelector):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.image = mikeys.state
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.image])
+
+class SelectSurface(InputSelector):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.image = mikeys.surface
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.image])
 
 
 class PipelineModule:
@@ -97,7 +166,7 @@ class Pipeline(torch.nn.Module):
     def __init__(self, *transforms):
         super().__init__()
         self.transforms = list(transforms)
-        allowed_first_transform = (InputSelector, PipelineModule, RandomChoice)
+        allowed_first_transform = (InputSelector, ServeValue, PipelineModule, RandomChoice)
         assert isinstance(
             self.transforms[0], allowed_first_transform
         ), f"The first transform of a Pipeline must be one of {allowed_first_transform} but got {type(self.transforms[0])}."
@@ -120,7 +189,7 @@ class Pipeline(torch.nn.Module):
         for t in self.transforms:
             if isinstance(t, InputSelector):
                 x = t(mapped_inputs)
-            elif isinstance(t, RandomChoice):
+            elif isinstance(t, (RandomChoice, ServeValue)):
                 x = t()
                 if isinstance(x, Pipeline):
                     x = x(mapped_inputs)

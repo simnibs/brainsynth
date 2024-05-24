@@ -112,18 +112,10 @@ class SynthesizeIntensityImage(BaseTransform):
         return image
 
 
-class MaskFromLabelImage(BaseTransform):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def forward(self, label_image, labels):
-        return torch.isin(label_image, labels)
-
-
 class RandMaskRemove(RandomizableTransform):
-    def __init__(self, mask, prob: float = 1.0):
+    def __init__(self, mask: torch.Tensor, prob: float = 1.0, device: None | torch.device = None,):
         """Randomly sets everything in mask to 0."""
-        super().__init__(prob)
+        super().__init__(prob, device)
         self.mask = mask
 
     def forward(self, image):
@@ -132,20 +124,9 @@ class RandMaskRemove(RandomizableTransform):
         return image
 
 
-class RandMaskFromLabelImageRemove(BaseTransform):
-    def __init__(self, label_image, labels, prob: float = 1.0) -> None:
-        super().__init__()
-        self._RandMaskRemove = RandMaskRemove(
-            MaskFromLabelImage()(label_image, labels, prob)
-        )
-
-    def forward(self, image):
-        return self._RandMaskRemove(image)
-
-
 class IntensityNormalization(BaseTransform):
-    def __init__(self, low: float = 0.001, high: float = 0.999) -> None:
-        super().__init__()
+    def __init__(self, low: float = 0.001, high: float = 0.999, device: None | torch.device = None) -> None:
+        super().__init__(device)
         self.low = low
         self.high = high
 
@@ -157,9 +138,9 @@ class IntensityNormalization(BaseTransform):
 
 class RandGaussianNoise(RandomizableTransform):
     def __init__(
-        self, mean: float, std_range: tuple[float] | list[float], prob: float = 1.0
+        self, mean: float, std_range: tuple[float] | list[float], prob: float = 1.0, device: None | torch.device = None,
     ):
-        super().__init__(prob)
+        super().__init__(prob, device)
         self.mean = mean
         self.std_range = std_range
 
@@ -167,7 +148,7 @@ class RandGaussianNoise(RandomizableTransform):
         if not self.should_apply_transform():
             return image
         a, b = self.std_range
-        std = a + (b - a) * torch.rand(1)
+        std = a + (b - a) * torch.rand(1, device=self.device)
         return image + self.mean + std * torch.randn(image.shape)
 
 
@@ -177,13 +158,13 @@ class RandGammaTransform(RandomizableTransform):
         self.mean = mean
         self.std = std
 
-    def _sample_gamma(self):
-        return torch.exp(self.mean + self.std * torch.randn(1))
+    def _sample_gamma(self, device):
+        return torch.exp(self.mean + self.std * torch.randn(1, device=device))
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         if not self.should_apply_transform():
             return image
-        gamma = self._sample_gamma()
+        gamma = self._sample_gamma(image.device)
         # apply transform
         ra = image.aminmax()
         r = ra.max - ra.min
@@ -205,7 +186,7 @@ class RandBiasfield(RandomizableTransform):
     ):
         super().__init__(prob, device)
 
-        self.size = torch.tensor(size, device=self.device)
+        self.size = torch.as_tensor(size, device=self.device)
         self.photo_mode = photo_mode
         self.interpolate_kwargs = interpolate_kwargs or dict(
             mode="trilinear", align_corners=True
@@ -267,3 +248,28 @@ class RandBlendImages(RandomizableTransform):
         sr = torch.rand(1)
         ir = 1 - sr
         return sr * images[self.image_name] + ir * images[self.blend_names[i]]
+
+class GaussianSmooth(BaseTransform):
+    def __init__(self, stds: float | torch.Tensor, spatial_dims = 3, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.spatial_dims = spatial_dims
+        if isinstance(stds, float):
+            stds = torch.full((self.spatial_dims,), stds, device=self.device)
+        else:
+            stds = torch.as_tensor(stds, device=self.device)
+            assert len(stds) == self.spatial_dims
+        kernel =
+        self.conv = getattr(torch.nn.functional, f"conv{spatial_dims}d")(kernel)
+
+    def _gaussian_kernel_weights(self, stds):
+        size = self.spatial_dims * [2 * int(max(stds)) + 1]
+        kernel = torch.zeros(size)
+
+        d = [torch.arange(-s,s+1, self.device) for s in stds]
+        d = torch.sqrt(d[0][:, None, None]**2 + d[1][None, :, None]**2 + d[2][None, None, :]**2)
+
+        size = max(map(len, w))
+        kernel
+
+    def forward(self, x):
+

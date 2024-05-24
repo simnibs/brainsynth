@@ -68,7 +68,6 @@ class BaseTransform(torch.nn.Module):
 #             x = transform() if x is None else transform(x)
 #         return x
 
-
 class RandomizableTransform(BaseTransform):
     """Similar to monai.transforms.RandomizableTransform but using torch."""
 

@@ -20,7 +20,7 @@ fov:
   # - SIZE HAS TO BE AN ARRAY!!
   # - PAD IS IGNORED...
   center: lh     # brain, image, lh, rh, random, random_hemi, [1,2,3]
-  size: [128, 192, 176]   # brain, image, lh, rh, hemi, [1,2,3] [176, 192, 172]
+  size: [128, 192, 176]   # brain, image, lh, rh, hemi, [1,2,3]
   pad: 0                  # 1, [1,2,3]
   resize_order: "trilinear"
 
@@ -28,7 +28,7 @@ fov:
 # Deformation of the initial image (and the resulting FOV)
 deformation:
   linear:
-    probability: 0.0 # 1.0
+    probability: 0.0 # 0.75 # 1.0
     max_rotation: 15
     max_shear: 0.2
     max_scale: 0.2
@@ -39,7 +39,7 @@ deformation:
 
   # NOTE: this is slow when including surfaces!
   nonlinear:
-    probability: 0.5
+    probability: 0.0 # 0.75
     nonlin_scale_min: 0.03
     nonlin_scale_max: 0.06
     nonlin_std_max: 4
@@ -57,7 +57,7 @@ flip:
 # Intensity profile of the synthesized image
 intensity:
   # Probability of synthesizing a new contrast
-  probability: 1.0 # 0.8 # 0.9
+  probability: 0.0 # 0.8 # 0.9
 
   # The means and standard deviations from which intensities are drawn (uniform
   # distributions with the following parameters)
@@ -111,7 +111,7 @@ exvivo:
     scale_max: 0.08
 
 photo_mode:
-  probability: 1.0
+  probability: 0.0
 
 # TODO: currently unused
 artifacts:

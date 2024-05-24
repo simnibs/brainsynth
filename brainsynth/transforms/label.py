@@ -29,6 +29,14 @@ from .base import BaseTransform
 #         pass
 
 
+class MaskFromLabelImage(BaseTransform):
+    def __init__(self, labels: list | tuple | torch.Tensor, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.labels = torch.as_tensor(labels, device=self.device)
+
+    def forward(self, label_image: torch.Tensor):
+        return torch.isin(label_image, self.labels)
+
 class OneHotEncoding(BaseTransform):
     def __init__(self, num_classes: int, device: None | torch.device = None) -> None:
         """This transform assumes that the values of the label tensor is 0 to
@@ -37,8 +45,9 @@ class OneHotEncoding(BaseTransform):
         super().__init__(device)
         self.num_classes = num_classes
 
-    def forward(self, x: torch.IntTensor):
+    def forward(self, x: torch.Tensor):
+        assert not x.is_floating_point()
         n = x.numel()
         out = torch.zeros((self.num_classes, n), dtype=x.dtype, device=x.device)
-        out[x.ravel(), torch.arange(n)] = 1
+        out[x.ravel(), torch.arange(n, dtype=torch.int)] = 1
         return out.reshape(self.num_classes, *x.shape)
