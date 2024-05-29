@@ -56,17 +56,15 @@ class BaseTransform(torch.nn.Module):
 #             self.recursive_selection(self.mapped_inputs[osel[0]], osel[1:])
 #         )
 
+class SequentialTransform(BaseTransform):
+    def __init__(self, *transforms):
+        super().__init__()
+        self.transforms = tuple(transforms)
 
-
-# class SequentialTransform(BaseTransform):
-#     def __init__(self, *transforms):
-#         super().__init__()
-#         self.transforms = tuple(transforms)
-
-#     def forward(self, x = None):
-#         for transform in self.transforms:
-#             x = transform() if x is None else transform(x)
-#         return x
+    def forward(self, x = None):
+        for transform in self.transforms:
+            x = transform() if x is None else transform(x)
+        return x
 
 class RandomizableTransform(BaseTransform):
     """Similar to monai.transforms.RandomizableTransform but using torch."""

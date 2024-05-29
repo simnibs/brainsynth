@@ -13,6 +13,7 @@ from .contrast import (
 )
 from .spatial import (
     CenterFromString,
+    CheckCoordsInside,
     Grid,
     GridCentering,
     GridNormalization,
@@ -23,7 +24,6 @@ from .spatial import (
     SpatialCrop,
     SpatialSize,
     SurfaceBoundingBox,
-    SurfaceDeformation,
     TranslationTransform,
 )
 from .label import MaskFromLabelImage, OneHotEncoding
@@ -85,7 +85,7 @@ class InputSelector(torch.nn.Module):
         if len(self.selection) == 0:
             return mapped_inputs
         elif len(self.selection) == 1:
-            return mapped_inputs[self.selection[0]]
+            return self.recursive_selection(mapped_inputs, self.selection)
         else:
             return self.recursive_selection(
                 mapped_inputs[self.selection[0]], self.selection[1:]
@@ -162,37 +162,90 @@ class PipelineModule:
         return self.transform(*args, **kwargs)
 
 
-class Pipeline(torch.nn.Module):
+class SubPipeline(torch.nn.Module):
     def __init__(self, *transforms):
         super().__init__()
         self.transforms = list(transforms)
-        allowed_first_transform = (InputSelector, ServeValue, PipelineModule, RandomChoice)
-        assert isinstance(
-            self.transforms[0], allowed_first_transform
-        ), f"The first transform of a Pipeline must be one of {allowed_first_transform} but got {type(self.transforms[0])}."
+        self.is_initialized = False
 
-    def initialize(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+    def initialize(self, mapped_inputs: dict[str, dict[str, torch.Tensor]], force: bool = False):
         """Initialize PipelineModules and Pipelines."""
+        if self.is_initialized and not force:
+            return
+
         for i, t in enumerate(self.transforms):
-            if isinstance(t, Pipeline):
-                t.initialize(mapped_inputs)
-            elif isinstance(t, PipelineModule):
-                self.transforms[i] = t(mapped_inputs)
-            # else assume regular transform
+            match t:
+                case SubPipeline():
+                    t.initialize(mapped_inputs)
+                case PipelineModule():
+                    self.transforms[i] = t(mapped_inputs)
+                # else assume regular transform
+
+        self.is_initialized = True
+
+    def reinitialize(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        self.initialized(mapped_inputs, force=True)
+
+    @staticmethod
+    def _run_element(t, mapped_inputs, x):
+        match t:
+            case SubPipeline():
+                x = t(mapped_inputs, x)
+            case _:
+                x = t(x)
+        return x
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]], x):
+        self.initialize(mapped_inputs)
+        for t in self.transforms:
+            x = self._run_element(t, mapped_inputs, x)
+        return x
+
+
+class Pipeline(SubPipeline):
+    def __init__(self, *transforms, unpack_inputs: bool = True):
+        super().__init__(*transforms)
+        self.unpack_inputs = unpack_inputs
+        valid_first_transform = (InputSelector, ServeValue, PipelineModule, RandomChoice)
+        assert isinstance(
+            self.transforms[0], valid_first_transform
+        ), f"The first transform of a Pipeline must be one of {valid_first_transform} but got {type(self.transforms[0])}."
+
+    @staticmethod
+    def _collect_input(transform, mapped_inputs):
+        match transform:
+            case InputSelector():
+                x = transform(mapped_inputs)
+            case RandomChoice() | ServeValue():
+                x = transform()
+                if isinstance(x, Pipeline):
+                    x = x(mapped_inputs)
+            case _:
+                raise RuntimeError(f"Invalid first transform {t}")
+        return x
+
+    def _transform_element(self, transforms, mapped_inputs, x):
+        for t in transforms:
+            x = self._run_element(t, mapped_inputs, x)
+        return x
+
+    def _transform_input(self, transforms: list | tuple, mapped_inputs, x):
+        if self.unpack_inputs:
+            match x:
+                case dict():
+                    x = {k: self._transform_input(transforms, mapped_inputs, v) for k,v in x.items()}
+                # case list() | tuple():
+                #     x = [self._transform_input(transforms, mapped_inputs, v) for v in x]
+                case _:
+                    x = self._transform_element(transforms, mapped_inputs, x)
+        else:
+            x = self._transform_element(transforms, mapped_inputs, x)
+        return x
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         self.initialize(mapped_inputs)
-        # x = self.transforms[0]()
-        # for transform in self.transforms[1:]:
-        #     x = transform(x)
 
-        for t in self.transforms:
-            if isinstance(t, InputSelector):
-                x = t(mapped_inputs)
-            elif isinstance(t, (RandomChoice, ServeValue)):
-                x = t()
-                if isinstance(x, Pipeline):
-                    x = x(mapped_inputs)
-            else:
-                x = t(x)
+        x = self._collect_input(self.transforms[0], mapped_inputs)
+        x = self._transform_input(self.transforms[1:], mapped_inputs, x)
+
         return x

@@ -2,6 +2,7 @@ import torch
 
 from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
+from brainsynth.transforms.filters import GaussianSmooth
 
 
 class SynthesizeIntensityImage(BaseTransform):
@@ -113,7 +114,12 @@ class SynthesizeIntensityImage(BaseTransform):
 
 
 class RandMaskRemove(RandomizableTransform):
-    def __init__(self, mask: torch.Tensor, prob: float = 1.0, device: None | torch.device = None,):
+    def __init__(
+        self,
+        mask: torch.Tensor,
+        prob: float = 1.0,
+        device: None | torch.device = None,
+    ):
         """Randomly sets everything in mask to 0."""
         super().__init__(prob, device)
         self.mask = mask
@@ -125,7 +131,12 @@ class RandMaskRemove(RandomizableTransform):
 
 
 class IntensityNormalization(BaseTransform):
-    def __init__(self, low: float = 0.001, high: float = 0.999, device: None | torch.device = None) -> None:
+    def __init__(
+        self,
+        low: float = 0.001,
+        high: float = 0.999,
+        device: None | torch.device = None,
+    ) -> None:
         super().__init__(device)
         self.low = low
         self.high = high
@@ -138,7 +149,11 @@ class IntensityNormalization(BaseTransform):
 
 class RandGaussianNoise(RandomizableTransform):
     def __init__(
-        self, mean: float, std_range: tuple[float] | list[float], prob: float = 1.0, device: None | torch.device = None,
+        self,
+        mean: float,
+        std_range: tuple[float, float] | list[float],
+        prob: float = 1.0,
+        device: None | torch.device = None,
     ):
         super().__init__(prob, device)
         self.mean = mean
@@ -194,6 +209,8 @@ class RandBiasfield(RandomizableTransform):
 
         if self.should_apply_transform():
             self.generate_biasfield(scale_min, scale_max, std_min, std_max)
+        else:
+            self.biasfield = None
 
     def generate_biasfield(
         self, scale_min: float, scale_max: float, std_min: float, std_max: float
@@ -203,20 +220,20 @@ class RandBiasfield(RandomizableTransform):
         bf_scale = scale_min + torch.rand(1, device=self.device) * (
             scale_max - scale_min
         )
-        size_BF_small = torch.round(bf_scale * self.size).to(torch.int)
+        bf_small_size = torch.round(bf_scale * self.size).to(torch.int)
 
         if self.photo_mode:
-            size_BF_small[1] = torch.round(self.size[1] / self.spacing).to(torch.int)
+            bf_small_size[1] = torch.round(self.size[1] / self.spacing).to(torch.int)
 
         # reduced size
-        BFsmall = std_min + (std_max - std_min) * torch.rand(
+        bf_small = std_min + (std_max - std_min) * torch.rand(
             1, device=self.device
-        ) * torch.randn(*size_BF_small, device=self.device)
+        ) * torch.randn(*bf_small_size, device=self.device)
 
         # Resize
         self.biasfield = torch.nn.functional.interpolate(
-            input=BFsmall[None, None],  # add batch, channel dims
-            size=tuple(self.size),
+            input = bf_small[None, None], # add batch, channel dims
+            size = tuple(self.size),
             **self.interpolate_kwargs,
         )[
             0
@@ -228,7 +245,7 @@ class RandBiasfield(RandomizableTransform):
         # # Gamma transform
         # gamma = torch.exp(self.config["intensity"]["gamma_std"] * torch.randn(1))
         # SYN_gamma = factor * (image / factor) ** gamma
-        return image * self.biasfield if self.should_apply_transform else image
+        return image * self.biasfield if self.should_apply_transform() else image
 
 
 class RandBlendImages(RandomizableTransform):
@@ -248,28 +265,3 @@ class RandBlendImages(RandomizableTransform):
         sr = torch.rand(1)
         ir = 1 - sr
         return sr * images[self.image_name] + ir * images[self.blend_names[i]]
-
-class GaussianSmooth(BaseTransform):
-    def __init__(self, stds: float | torch.Tensor, spatial_dims = 3, device: None | torch.device = None) -> None:
-        super().__init__(device)
-        self.spatial_dims = spatial_dims
-        if isinstance(stds, float):
-            stds = torch.full((self.spatial_dims,), stds, device=self.device)
-        else:
-            stds = torch.as_tensor(stds, device=self.device)
-            assert len(stds) == self.spatial_dims
-        kernel =
-        self.conv = getattr(torch.nn.functional, f"conv{spatial_dims}d")(kernel)
-
-    def _gaussian_kernel_weights(self, stds):
-        size = self.spatial_dims * [2 * int(max(stds)) + 1]
-        kernel = torch.zeros(size)
-
-        d = [torch.arange(-s,s+1, self.device) for s in stds]
-        d = torch.sqrt(d[0][:, None, None]**2 + d[1][None, :, None]**2 + d[2][None, None, :]**2)
-
-        size = max(map(len, w))
-        kernel
-
-    def forward(self, x):
-

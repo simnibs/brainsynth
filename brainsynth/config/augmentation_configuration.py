@@ -1,6 +1,7 @@
 import torch
 
-from brainsynth.constants.constants import mapped_input_keys as mikeys
+from brainsynth.constants.constants import labeling_scheme
+from brainsynth.transforms.spatial import GridCentering
 
 class AugmentationConfiguration:
     def __init__(
@@ -8,11 +9,13 @@ class AugmentationConfiguration:
         pipeline: str = "DefaultPipeline",
         in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
         out_size: list[int] | tuple[int, int, int] = (192, 192, 192),
+        align_corners: bool = True,
         out_center_str: str = "image",
-        segmentation_labels: None | list[int] | tuple[int] = None,
+        segmentation_labels: list[int] | tuple | str = "brainseg",
         photo_mode: bool = False,
         photo_spacing_range: list[float] | tuple[float, float] = (2.0, 7.0),
-        alternative_images: None | list[str] | tuple[str] = None,
+        photo_thickness: float = 0.001,
+        alternative_images: None | list[str] | tuple = None,
         device: str | torch.device = "cuda",
     ):
         self.device = torch.device(device)
@@ -24,17 +27,35 @@ class AugmentationConfiguration:
 
         assert len(out_size) == 3
         self.out_size = torch.tensor(out_size, device=self.device)
+        self.align_corners = align_corners
+        self.grid = torch.stack(
+            torch.meshgrid(
+                [
+                    torch.arange(s.item(), dtype=torch.float, device=self.device)
+                    for s in self.out_size
+                ],
+                indexing="ij",
+            ),
+            dim=-1,
+        )
+        # center the grid
+        grid_centering = GridCentering(self.out_size, self.align_corners, self.device)
+        self.center = grid_centering.center
+        self.centered_grid = grid_centering(self.grid)
 
         assert out_center_str in {"brain", "image", "lh", "random", "rh"}
         self.out_center_str = out_center_str
 
+        if isinstance(segmentation_labels, str):
+            segmentation_labels = getattr(labeling_scheme, segmentation_labels)
         self.segmentation_labels = segmentation_labels
-        self.segmentation_num_labels = len(segmentation_labels)
+        self.segmentation_num_labels = len(self.segmentation_labels)
 
         self.photo_mode = photo_mode
 
         assert len(photo_spacing_range) == 2
         self.photo_spacing_range = photo_spacing_range
+        self.photo_thickness = photo_thickness
 
         # if alternative_images is not None:
             # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)

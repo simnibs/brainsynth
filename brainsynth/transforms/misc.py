@@ -33,3 +33,4 @@ class ServeValue(BaseTransform):
 
     def forward(self):
         return self.x
+

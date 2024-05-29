@@ -3,6 +3,20 @@ import warnings
 import torch
 
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
+from brainsynth.transforms import resolution_sampler
+from brainsynth.transforms.filters import GaussianSmooth
+
+
+# import functools
+
+# def dict_recursion(func):
+#     @functools.wraps(func)
+#     def wrapper(x):
+#         if isinstance(x, dict):
+#             return {k:wrapper(v) for k,v in x.items()}
+#         else:
+#             return func(x)
+#     return wrapper
 
 
 class SpatialCrop(BaseTransform):
@@ -44,16 +58,22 @@ class SpatialCrop(BaseTransform):
         out[..., *self.slice_out] = image[..., *self.slice_in]
         return out
 
-
 class TranslationTransform(BaseTransform):
     def __init__(
-        self, translation: torch.Tensor, device: None | torch.device = None
+        self,
+        translation: torch.Tensor,
+        invert: bool = False,
+        device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
+        self.invert = invert
         self.translation = translation.to(self.device)
 
     def forward(self, x: torch.Tensor):
-        return x + self.translation
+        if self.invert:
+            return x - self.translation
+        else:
+            return x + self.translation
 
 
 class RandLinearTransform(RandomizableTransform):
@@ -156,8 +176,9 @@ class RandNonlinearTransform(RandomizableTransform):
         scale_min: float,
         scale_max: float,
         std_max: float,
-        integrate_svf: bool = False,
-        n_steps: int = 8,
+        backward_field_estimation: bool = False,
+        backward_field_int_steps: int = 8,
+        grid: None | torch.Tensor = None,
         photo_mode: bool = False,
         device: None | torch.device = None,
         prob: float = 1.0,
@@ -168,7 +189,8 @@ class RandNonlinearTransform(RandomizableTransform):
         that the deformations are [C,W,H,D] although when applying it in
         `compute_deformed_grid` we use it as [W,H,D,C].
 
-
+        compute_backward_field
+            Integrate SVF.
         n_steps
             Number of integration steps for
 
@@ -179,11 +201,11 @@ class RandNonlinearTransform(RandomizableTransform):
         self.scale_min = scale_min
         self.scale_max = scale_max
         self.std_max = std_max
-        self.integrate_svf = integrate_svf
-        self.n_steps = n_steps
+        self.backward_field_estimation = backward_field_estimation
+        self.backward_field_int_steps = backward_field_int_steps
 
         if not self.should_apply_transform():
-            self.trans = dict(forward=None, backward=None)
+            self.trans = {}
             return
 
         nonlin_scale = scale_min + torch.rand(1) * (scale_max - scale_min)
@@ -194,111 +216,145 @@ class RandNonlinearTransform(RandomizableTransform):
                 size_F_small.dtype
             )
         nonlin_std = std_max * torch.rand(1)
+        print(f"nonlin std {nonlin_std}")
 
         # Channel first (as is normal)
-        ft = nonlin_std * torch.randn([3, *size_F_small], device=self.device)
-        ft = Resize(out_size)(ft)
+        fwd = nonlin_std * torch.randn([3, *size_F_small], device=self.device)
+        fwd = Resize(out_size)(fwd)
 
         if photo_mode:
             # no deformation in AP direction
-            ft[1] = 0
+            fwd[1] = 0
 
-        ft = self.channel_last(ft)
-
-        if integrate_svf:
+        if backward_field_estimation:
             # this is slow on the CPU
-            steplength = 1.0 / (2.0**n_steps)
+            steplength = 1.0 / (2.0**backward_field_int_steps)
 
             # forward integration
-            Fsvf = ft * steplength
-            for _ in torch.arange(n_steps):
-                # Fsvf += self.apply_grid_sample(
-                #     Fsvf, grid + self.as_channel_last(Fsvf)
-                # )
-                resample = GridSample(grid + self.channel_last(Fsvf), out_size)
-                Fsvf += resample(Fsvf)
+            Fsvf_1 = fwd * steplength
+            for _ in torch.arange(backward_field_int_steps):
+                resample = GridSample(grid + self.channel_last(Fsvf_1), out_size)
+                Fsvf_1 += resample(Fsvf_1)
 
             # backward integration
-            Fsvf_neg = -ft * steplength
-            for _ in torch.arange(self.n_steps):
-                # Fsvf_neg += self.apply_grid_sample(
-                #     Fsvf_neg, grid + self.as_channel_last(Fsvf_neg)
-                # )
-                resample = GridSample(grid + self.channel_last(Fsvf_neg), out_size)
-                Fsvf_neg += resample(Fsvf_neg)
+            Fsvf_neg_1 = -fwd * steplength
+            for _ in torch.arange(backward_field_int_steps):
+                resample = GridSample(grid + self.channel_last(Fsvf_neg_1), out_size)
+                Fsvf_neg_1 += resample(Fsvf_neg_1)
 
-            ft = Fsvf
-            bt = Fsvf_neg
+            self.trans = dict(forward=Fsvf_1, backward=Fsvf_neg_1)
         else:
-            bt = None
-
-        self.trans = dict(forward=ft, backward=bt)
+            self.trans = dict(forward=fwd)
 
     @staticmethod
     def channel_last(x):
-        return x.permute((3, 1, 2, 0))
+        return x.permute((1, 2, 3, 0))
 
     def forward(self, grid, direction="forward"):
         if self.should_apply_transform():
-            return grid + self.channel_last(self.trans[direction])
+            match direction:
+                case "forward":
+                    return grid + self.channel_last(self.trans[direction])
+                case "backward":
+                    sampler = GridSample(grid, self.out_size)
+                    return grid + sampler(self.trans[direction]).squeeze().T
         else:
             return grid
 
 
-class SurfaceDeformation(BaseTransform):
+class CheckCoordsInside(BaseTransform):
     def __init__(
-        self, linear_trans, nonlinear_trans, device: None | torch.device = None
+        self, size, raise_on_outsize: bool = False, device: None | torch.device = None
     ) -> None:
         super().__init__(device)
-        self.linear_trans = linear_trans
-        self.nonlinear_trans = nonlinear_trans
+        self.size = torch.as_tensor(size, device=self.device)
+        self.raise_on_outsize = raise_on_outsize
+        self.msg_header = "Cortical surface is partly outside of FOV."
 
-    def deform_surface(self, s):
-        surface_center = 0.5 * (s.amax(1) - s.amin(1))
-        image_center = center_from_shape(self.nonlinear_trans.out_size, align_corners=True)
+    def forward(self, coords):
+        msg = [self.msg_header]
+        outside = False
+        if torch.any((smin := coords.amin(0)) < 0):
+            msg.append(f"  {torch.round(smin, decimals=2)} < (0, 0, 0)")
+            outside = True
+        if torch.any(
+            (smax := coords.amax(0)) > self.size
+        ):
+            msg.append(f"  {torch.round(smax, decimals=2)} > {self.size}")
+            outside = True
 
-        # center around (0,0,0)
-        s -= surface_center  # s -= self.translation
+        if outside:
+            msg = "\n".join(msg)
+            if self.raise_on_outsize:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
-        s = self.linear_trans(s, inverse=True)
-
-        # center in output FOV
-        s += image_center  # s += self.center
-
-        if self.nonlinear_trans.should_apply_transform():
-            sample = GridSample(s, self.nonlinear_trans.out_size)
-            s += sample(self.nonlinear_trans.trans["backward"])
-
-        if (smin := s.amin() < 0) or torch.any(smax := s.amax(0) > self.fov_size):
-            warnings.warn(
-                (
-                    "Cortical surface is partly outside of FOV. BBOX of FOV is "
-                    f"{(0,0,0), self.fov_size}. BBOX of surface is "
-                    f"{smin(0), smax(0)}"
-                )
-            )
-
-        return s
-
-    def forward(self, surface: dict | torch.Tensor):
-        if isinstance(surface, torch.Tensor):
-            return self.deform_surface(surface)
-        else:
-            return {k: self.forward(v) for k, v in surface.items()}
+        return coords
 
 
-def center_from_shape(size, align_corners=True):
-    if align_corners:
-        return 0.5 * (size - 1.0)
-    else:
-        return 0.5 * size
+# class SurfaceDeformation(BaseTransform):
+#     def __init__(
+#         self,
+#         linear_trans: RandLinearTransform,
+#         nonlinear_trans: RandNonlinearTransform,
+#         # nonlinear_field: ,
+#         # out_size: ,
+#         out_center: torch.Tensor,
+#         device: None | torch.device = None,
+#     ) -> None:
+#         super().__init__(device)
+#         self.linear_trans = linear_trans
+#         self.nonlinear_trans = nonlinear_trans
+#         self.out_size = self.nonlinear_trans.out_size
+#         # the center of the final FOV
+#         self.out_center = out_center
+#         # center in the output image
+#         # self.center_in_out_image = GridCentering(self.out_size, device=self.device)
+
+#     def deform_surface(self, s):
+#         # surface_center = 0.5 * (s.amax(0) - s.amin(0))
+
+#         # center around (0,0,0)
+#         # s -= surface_center
+#         s -= self.out_center
+
+#         s = self.linear_trans(s, inverse=True)
+
+#         # place appropriately in output FOV
+#         # s = self.center_in_out_image(s + self.out_center + surface_center)
+#         s = s + center_from_shape(self.out_size)
+
+#         if self.nonlinear_trans.should_apply_transform():
+#             sample = GridSample(s, self.nonlinear_trans.out_size)
+#             s += sample(self.nonlinear_trans.trans["backward"])
+
+#         if torch.any((smin := s.amin(0)) < 0) or torch.any(
+#             (smax := s.amax(0)) > self.out_size
+#         ):
+#             smax = s.amax(0) if "smax" not in vars() else smax
+#             warnings.warn(
+#                 (
+#                     "Cortical surface is partly outside of FOV.\n"
+#                     f"  {tuple(i.item() for i in smin)} > (0,0,0)"
+#                     f"  {tuple(i.item() for i in smax)} < {self.out_size}."
+#                 )
+#             )
+
+#         return s
+
+#     def forward(self, surface: dict | torch.Tensor):
+#         if isinstance(surface, torch.Tensor):
+#             return self.deform_surface(surface)
+#         else:
+#             return {k: self.forward(v) for k, v in surface.items()}
 
 
 class Resize(BaseTransform):
-    def __init__(self, size: torch.Tensor | tuple | list, mode="bilinear"):
+    def __init__(self, size: torch.Tensor | tuple | list, mode="trilinear"):
         super().__init__()
         self.size = tuple(size)
-        self.mode = mode or "bilinear"  # trilinear when `image` is 5-D
+        self.mode = mode
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         if image.ndim == 3:
@@ -443,8 +499,8 @@ class GridSample(BaseTransform):
             return image
 
         if not self.assume_normalized:
-            assert (
-                (image_size := tuple(image.size()[-3:])) == tuple(self.size)
+            assert (image_size := tuple(image.size()[-3:])) == tuple(
+                self.size
             ), f"Expected image with spatial dimensions {self.size} but got {image_size}."
 
         image_ndim = len(image.shape)
@@ -467,7 +523,11 @@ class GridSample(BaseTransform):
             # Cast to float and back since grid_sample doesn't support int (
             # at least not on cuda)
             sample = torch.nn.functional.grid_sample(
-                image.float(), self.norm_grid, align_corners=True, mode="nearest", **kwargs
+                image.float(),
+                self.norm_grid,
+                align_corners=True,
+                mode="nearest",
+                **kwargs,
             ).to(image.dtype)
 
         if self.grid_ndim == 2:
@@ -481,8 +541,13 @@ class SurfaceBoundingBox(BaseTransform):
     def __init__(self, device: None | torch.device = None) -> None:
         super().__init__(device)
 
+    @staticmethod
+    def bbox(x):
+        """Bounding box of 2D array with (points, coordinates)."""
+        return torch.stack((x.amin(0), x.amax(0)))
+
     def forward(self, surface: dict[str, torch.Tensor]):
-        return {h:torch.stack((s.amin(0), s.amax(0))) for h,s in surface.items()}
+        return {h: self.bbox(s) for h, s in surface.items()}
 
 
 class CenterFromString(BaseTransform):
@@ -527,8 +592,11 @@ class RandResolution(RandomizableTransform):
         self,
         out_size,
         in_res,
+        res_sampler: str = "ResolutionSamplerDefault",
         photo_mode: bool = False,
         photo_spacing: float | None = None,
+        photo_thickness: float = 0.001,
+        photo_res_sampler: str = "ResolutionSamplerPhoto",
         prob: float = 1.0,
         device: None | torch.device = None,
     ):
@@ -544,10 +612,16 @@ class RandResolution(RandomizableTransform):
         # target resolution
         if self.should_apply_transform():
             if self.photo_mode:
-                out_res, thickness = self.resolution_photo_mode()
+                out_res, thickness = getattr(resolution_sampler, photo_res_sampler)(
+                    self.in_res,
+                    photo_spacing,
+                    photo_thickness,
+                    device,
+                )
             else:
-                out_res, thickness = self.resolution_sampler()
-            stds = (
+                out_res, thickness = getattr(resolution_sampler, res_sampler)(device)()
+
+            sigma = (
                 (0.85 + 0.3 * torch.rand(1, device=self.device))
                 * torch.log(torch.tensor([5.0], device=self.device))
                 / torch.pi
@@ -556,59 +630,17 @@ class RandResolution(RandomizableTransform):
             )
             # no blur if thickness is equal to the resolution of the training
             # data
-            stds[thickness <= self.in_res] = 0.0
+            sigma[thickness <= self.in_res] = 0.0
             self.out_res = out_res
-            self.stds = stds
+            self.sigma = tuple(s.item() for s in sigma)
+            self.gaussian_blur = GaussianSmooth(self.sigma)
         else:
             self.out_res = in_res
-            self.stds = None
-
-    def resolution_photo_mode(self, slice_thickness=0.001):
-        out_res = torch.tensor(
-            [self.in_res[0], self.spacing, self.in_res[2]], device=self.device
-        )
-        thickness = torch.tensor(
-            [self.in_res[0], slice_thickness, self.in_res[2]], device=self.device
-        )
-        return out_res, thickness
-
-    def resolution_sampler(self):
-
-        # if self.do_task["photo_mode"]:
-
-        # else:
-        #     out_res = in_res.clone()
-        #     thickness = in_res.clone()
-        #     # out_res, thickness = resolution_sampler(self.device)
-        # return out_res, thickness
-
-        with torch.device(self.device):
-            r = torch.rand(1)
-            # if r < 0.25:  # 1mm isotropic
-            #     resolution = torch.tensor([1.0, 1.0, 1.0])
-            #     thickness = torch.tensor([1.0, 1.0, 1.0])
-            if r < 0.33:
-                # clinical (low-res in one dimension)
-                resolution = torch.tensor([1.0, 1.0, 1.0])
-                thickness = torch.tensor([1.0, 1.0, 1.0])
-                idx = torch.randint(0, 3, (1,))
-                resolution[idx] = 2.5 + 2 * torch.rand(1)
-                thickness[idx] = torch.minimum(
-                    resolution[idx], 4.0 + 2.0 * torch.rand(1)
-                )
-            elif r < 0.67:
-                # low-field: stock sequences (always axial)
-                resolution = torch.tensor([1.3, 1.3, 3.0]) + 0.4 * torch.rand(3)
-                thickness = resolution.clone()
-            else:
-                # low-field: isotropic-ish (also good for scouts)
-                resolution = 2.0 + 1.0 * torch.rand(3)
-                thickness = resolution.clone()
-
-        return resolution, thickness
+            self.sigma = None
+            self.gaussian_blur = None
 
     def forward(self, image):
-        if self.stds is None:
+        if not self.should_apply_transform():
             return image
 
         # sanity check
@@ -626,7 +658,8 @@ class RandResolution(RandomizableTransform):
         small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
 
         # blur and downsample
-        image = monai.transforms.GaussianSmooth(self.stds)(image)
+        # image = monai.transforms.GaussianSmooth(self.sigma)(image)
+        image = self.gaussian_blur(image)
         image = GridSample(small_grid, self.out_size)(image)
 
         # is this necessary?

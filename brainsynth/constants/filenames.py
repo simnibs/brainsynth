@@ -1,7 +1,7 @@
 from collections import namedtuple
 import itertools
 
-from brainsynth.constants.constants import HEMISPHERES, SURFACE_RESOLUTIONS
+from brainsynth.constants.constants import HEMISPHERES, SURFACE_RESOLUTIONS, SURFACES
 
 # Default images. These always exists
 DefaultImageFiles = namedtuple(
@@ -36,6 +36,18 @@ surfaces = {
 
 surface_templates = {
     (res,hemi): f"surface-template.{res}.{hemi}.pt" for res,hemi in itertools.product(SURFACE_RESOLUTIONS, HEMISPHERES)
+}
+
+
+# surfaces = {
+#     (hemi, surf, res): f"{hemi}.{surf}.{res}.target.pt" for hemi, res, surf in itertools.product(HEMISPHERES, SURFACE_RESOLUTIONS, SURFACES)
+# }
+# surface_templates = {
+#     (hemi, res): f"{hemi}.{res}.template.pt" for hemi, res in itertools.product(HEMISPHERES, SURFACE_RESOLUTIONS)
+# }
+
+surface_prediction = {
+    (hemi, surf, res): f"{hemi}.{surf}.{res}.prediction.pt" for hemi, res, surf in itertools.product(HEMISPHERES, SURFACE_RESOLUTIONS, SURFACES)
 }
 
 

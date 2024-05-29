@@ -3,8 +3,8 @@ rng_seed: null
 # Segmentation labeling scheme as produced by prepare_freesurfer_data
 # Currently, this is hardcoded in `prepare_freesurfer_data`
 labeling_scheme:
-  segmentation: incl_csf
-  segmentation_brain: wmgm
+  segmentation: brainseg
+  # segmentation_brain: wmgm
 
 # SETTINGS FOR SYNTHESIZED IMAGE(S)
 
