@@ -8,7 +8,7 @@ class GaussianSmooth(BaseTransform):
         self,
         sigma: float | list[float] | tuple,
         tail_length: float = 4.0,
-        spatial_dims=3,
+        spatial_dims: int = 3,
         device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
@@ -34,7 +34,7 @@ class GaussianSmooth(BaseTransform):
 
     def _compute_gaussian_kernel(self, s: float, tail_length: float, dim: int):
         tail = int(max(round(s * tail_length), 1.0))
-        x = torch.arange(-tail, tail + 1)
+        x = torch.arange(-tail, tail + 1, device=self.device)
 
         N = torch.distributions.Normal(0.0, s)
         kernel = N.log_prob(x).exp()

@@ -208,15 +208,14 @@ class RandNonlinearTransform(RandomizableTransform):
             self.trans = {}
             return
 
-        nonlin_scale = scale_min + torch.rand(1) * (scale_max - scale_min)
+        nonlin_scale = scale_min + torch.rand(1, device=self.device) * (scale_max - scale_min)
         size_F_small = torch.round(nonlin_scale * out_size).to(torch.int)
 
         if photo_mode:
             size_F_small[1] = torch.round(out_size[1] / self.spacing).to(
                 size_F_small.dtype
             )
-        nonlin_std = std_max * torch.rand(1)
-        print(f"nonlin std {nonlin_std}")
+        nonlin_std = std_max * torch.rand(1, device=self.device)
 
         # Channel first (as is normal)
         fwd = nonlin_std * torch.randn([3, *size_F_small], device=self.device)
@@ -277,9 +276,7 @@ class CheckCoordsInside(BaseTransform):
         if torch.any((smin := coords.amin(0)) < 0):
             msg.append(f"  {torch.round(smin, decimals=2)} < (0, 0, 0)")
             outside = True
-        if torch.any(
-            (smax := coords.amax(0)) > self.size
-        ):
+        if torch.any((smax := coords.amax(0)) > self.size):
             msg.append(f"  {torch.round(smax, decimals=2)} > {self.size}")
             outside = True
 
@@ -616,10 +613,10 @@ class RandResolution(RandomizableTransform):
                     self.in_res,
                     photo_spacing,
                     photo_thickness,
-                    device,
+                    self.device,
                 )
             else:
-                out_res, thickness = getattr(resolution_sampler, res_sampler)(device)()
+                out_res, thickness = getattr(resolution_sampler, res_sampler)(self.device)()
 
             sigma = (
                 (0.85 + 0.3 * torch.rand(1, device=self.device))
@@ -633,7 +630,7 @@ class RandResolution(RandomizableTransform):
             sigma[thickness <= self.in_res] = 0.0
             self.out_res = out_res
             self.sigma = tuple(s.item() for s in sigma)
-            self.gaussian_blur = GaussianSmooth(self.sigma)
+            self.gaussian_blur = GaussianSmooth(self.sigma, device=self.device)
         else:
             self.out_res = in_res
             self.sigma = None
@@ -652,7 +649,7 @@ class RandResolution(RandomizableTransform):
         factors = ds_size / self.out_size
         delta = (1.0 - factors) / (2.0 * factors)
         hv = tuple(
-            torch.arange(d, d + ns / f, 1 / f)[:ns]
+            torch.arange(d, d + ns / f, 1 / f, device=self.device)[:ns]
             for d, ns, f in zip(delta, ds_size, factors)
         )
         small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)

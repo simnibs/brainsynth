@@ -155,7 +155,7 @@ class DefaultPipeline(PipelineBuilder):
             inv_linear_transform,
             TranslationTransform(config.center, device=device),
             inv_nonlinear_transform,
-            CheckCoordsInside(config.out_size),
+            CheckCoordsInside(config.out_size, device=device),
         )
 
         output = dict(

@@ -84,7 +84,7 @@ class SynthesizeIntensityImage(BaseTransform):
         if mask.any():  # only if we have partial volume information
 
             Gv = label[mask]
-            isv = torch.zeros(Gv.shape)
+            isv = torch.zeros(Gv.shape, device=self.device)
             # e.g., 2.25 -> 75 % WM
             pw = (Gv <= 3) * (3 - Gv)
             isv += pw * self.mu[2] + pw * self.sigma[2] * torch.randn(
@@ -111,7 +111,6 @@ class SynthesizeIntensityImage(BaseTransform):
         image = self.add_partial_volume_effect(label, image)
         # image[image < lut.Unknown] = lut.Unknown # clip
         return image
-
 
 class RandMaskRemove(RandomizableTransform):
     def __init__(
