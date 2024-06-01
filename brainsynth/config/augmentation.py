@@ -1,9 +1,9 @@
 import torch
 
-from brainsynth.constants.constants import labeling_scheme
+from brainsynth.constants import IMAGE
 from brainsynth.transforms.spatial import GridCentering
 
-class AugmentationConfiguration:
+class AugmentationConfig:
     def __init__(
         self,
         pipeline: str = "DefaultPipeline",
@@ -27,7 +27,10 @@ class AugmentationConfiguration:
 
         assert len(out_size) == 3
         self.out_size = torch.tensor(out_size, device=self.device)
+        assert torch.all(self.out_size % 2 == 0), "Output FOV should be divisible by 2."
+
         self.align_corners = align_corners
+        assert align_corners == True, "Spatial augmentation is untested with align_corners = False and probably does not work properly."
         self.grid = torch.stack(
             torch.meshgrid(
                 [
@@ -47,7 +50,7 @@ class AugmentationConfiguration:
         self.out_center_str = out_center_str
 
         if isinstance(segmentation_labels, str):
-            segmentation_labels = getattr(labeling_scheme, segmentation_labels)
+            segmentation_labels = getattr(IMAGE.labeling_scheme, segmentation_labels)
         self.segmentation_labels = segmentation_labels
         self.segmentation_num_labels = len(self.segmentation_labels)
 

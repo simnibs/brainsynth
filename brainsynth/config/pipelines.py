@@ -1,7 +1,7 @@
 from functools import partial
 
-from brainsynth.constants.constants import mapped_input_keys as mikeys
-from brainsynth.config.augmentation_configuration import AugmentationConfiguration
+from brainsynth.constants import mapped_input_keys as mikeys
+from brainsynth.config.augmentation import AugmentationConfig
 from brainsynth.transforms import *
 
 # Use from_image("T1w") instead of "image:T1w".
@@ -15,7 +15,7 @@ class PipelineBuilder:
     def __init__(self) -> None:
         pass
 
-    def build(self, config: AugmentationConfiguration):
+    def build(self, config: AugmentationConfig):
         raise NotImplementedError()
 
 
@@ -23,7 +23,7 @@ class DefaultPipeline(PipelineBuilder):
     def __init__(self) -> None:
         super().__init__()
 
-    def build(self, config: AugmentationConfiguration):
+    def build(self, config: AugmentationConfig):
         """
         Pipeline provides `mapped_inputs` which are needed when calling InputSelector.
         Hence, all InputSelectors must be used *in* a Pipeline.
@@ -84,10 +84,9 @@ class DefaultPipeline(PipelineBuilder):
                 unpack_inputs=False,
             ),
             # the size of the input image(s)
+            # (this should be an image that is always available)
             in_size=Pipeline(
-                SelectImage(
-                    "generation"
-                ),  # this should be an image that is always available
+                SelectImage("generation_labels"),
                 SpatialSize(),
             ),
             #
@@ -95,7 +94,7 @@ class DefaultPipeline(PipelineBuilder):
                 SelectInitialVertices(),
                 # InputSelector("surface:lh:pial"),
                 SurfaceBoundingBox(),
-                unpack_inputs = False,
+                unpack_inputs=False,
             ),
             # center of FOV (output) in the input image(s)
             out_center=Pipeline(
@@ -104,6 +103,7 @@ class DefaultPipeline(PipelineBuilder):
                     CenterFromString,
                     SelectState("in_size"),
                     SelectState("surface_bbox"),
+                    align_corners = config.align_corners,
                 ),
             ),
             # the deformed grid
@@ -159,41 +159,45 @@ class DefaultPipeline(PipelineBuilder):
         )
 
         output = dict(
-            T1w=Pipeline(
-                SelectImage("T1w"),
+            t1w=Pipeline(
+                SelectImage("t1w"),
                 image_deformation,
                 intensity_normalization,
+                skip_on_InputSelectorError=True,
             ),
-            T1w_mask=Pipeline(
-                SelectImage("T1w_mask"),
+            t1w_mask=Pipeline(
+                SelectImage("t1w_mask"),
                 image_deformation,
+                skip_on_InputSelectorError=True,
             ),
-            T2w=Pipeline(
-                SelectImage("T2w"),
+            t2w=Pipeline(
+                SelectImage("t2w"),
                 image_deformation,
                 intensity_normalization,
+                skip_on_InputSelectorError=True,
             ),
-            T2w_mask=Pipeline(
-                SelectImage("T2w_mask"),
+            t2w_mask=Pipeline(
+                SelectImage("t2w_mask"),
                 image_deformation,
+                skip_on_InputSelectorError=True,
             ),
-            segmentation=Pipeline(
-                SelectImage("segmentation"),
+            brainseg=Pipeline(
+                SelectImage("brainseg"),
                 image_deformation,
                 OneHotEncoding(config.segmentation_num_labels),
+                skip_on_InputSelectorError=True,
             ),
             image=Pipeline(
                 RandomChoice(
                     [
                         # Synthesize image
                         Pipeline(
-                            SelectImage("generation"),
+                            SelectImage("generation_labels"),
                             SynthesizeIntensityImage(
                                 mu_offset=25.0,
                                 mu_scale=200.0,
                                 sigma_offset=0.0,
                                 sigma_scale=10.0,
-                                add_partial_volume=True,
                                 photo_mode=config.photo_mode,
                                 min_cortical_contrast=25.0,
                                 device=device,
@@ -216,7 +220,7 @@ class DefaultPipeline(PipelineBuilder):
                             ),
                         ),
                     ],
-                    prob=(0.5, 0.5),
+                    prob=(1.0, 0.0),
                 ),
                 #
                 image_deformation,
@@ -239,7 +243,7 @@ class DefaultPipeline(PipelineBuilder):
                     photo_mode=config.photo_mode,
                     photo_spacing=SelectState("photo_spacing"),
                     photo_thickness=config.photo_thickness,
-                    prob=0.75,
+                    prob=0.0,
                     device=device,
                 ),
                 intensity_normalization,
@@ -247,10 +251,12 @@ class DefaultPipeline(PipelineBuilder):
             surface=Pipeline(
                 SelectSurface(),
                 surface_deformation,
+                skip_on_InputSelectorError=True,
             ),
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
                 surface_deformation,
+                skip_on_InputSelectorError=True,
             ),
         )
 

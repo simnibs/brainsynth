@@ -552,11 +552,13 @@ class CenterFromString(BaseTransform):
         self,
         size: torch.Tensor,
         surface_bbox: dict[str, torch.Tensor] | None = None,
+        align_corners: bool = True,
         device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
         self.size = size
         self.surface_bbox = surface_bbox
+        self.align_corners = align_corners
         if self.surface_bbox is None:
             self.valid_centers = {"image", "random"}
         else:
@@ -565,22 +567,30 @@ class CenterFromString(BaseTransform):
     def forward(self, center):
         if self.valid_centers is not None:
             assert center in self.valid_centers
+
         match center:
             case "brain":
-                return
+                raise NotImplementedError
+                # center =
             case "image":
-                return 0.5 * (self.size - 1.0)
+                res = 0.5 * (self.size - 1.0)
             case "lh":
-                return self.surface_bbox["lh"].mean(0)
+                res = self.surface_bbox["lh"].mean(0)
             case "random":
-                return
+                raise NotImplementedError
+                # center =
             case "rh":
-                return self.surface_bbox["rh"].mean(0)
-            # case torch.tensor:
-            #     return center
-            # case list | tuple:
-            #     return torch.tensor(center, device=self.device)
+                res = self.surface_bbox["rh"].mean(0)
 
+        # When align_corners = True (in grid sampling), this, together with the
+        # assertion that the FOV size is divisible by 2, ensures that we sample
+        # exactly in the center of a voxel when there is no linear or nonlinear
+        # deformation (we could get almost identical results with cropping).
+        # This is important, especially for label images, as otherwise we are
+        # always sampling exactly in between two voxels which will result in
+        # label images that look downsampled. (Also, the exact center is not
+        # important.)
+        return res.floor() + 0.5 if self.align_corners else res
 
 class RandResolution(RandomizableTransform):
     """Simulate a"""

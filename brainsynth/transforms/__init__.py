@@ -29,7 +29,7 @@ from .spatial import (
 from .label import MaskFromLabelImage, OneHotEncoding
 from .misc import ExtractDictKeys, Intersection, ServeValue, Uniform
 
-from brainsynth.constants.constants import mapped_input_keys as mikeys
+from brainsynth.constants import mapped_input_keys as mikeys
 
 
 class InputSelectorError(Exception):
@@ -44,15 +44,14 @@ class InputSelector(torch.nn.Module):
     def recursive_selection(self, mapped_input, keys):
         try:
             selection = mapped_input[keys[0]]
+            if len(keys) == 1:
+                return selection
+            else:
+                return self.recursive_selection(selection, keys[1:])
         except KeyError:
             raise InputSelectorError(
                 f"No key `{keys[0]}` in `mapped_input` with keys {tuple(mapped_input.keys())}."
             )
-
-        if len(keys) == 1:
-            return selection
-        else:
-            return self.recursive_selection(selection, keys[1:])
 
     def forward(
         self,
@@ -93,8 +92,8 @@ class InputSelector(torch.nn.Module):
 
 
 class SelectImage(InputSelector):
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.image = mikeys.image
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
@@ -102,8 +101,8 @@ class SelectImage(InputSelector):
 
 
 class SelectInitialVertices(InputSelector):
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.image = mikeys.initial_vertices
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
@@ -111,16 +110,16 @@ class SelectInitialVertices(InputSelector):
 
 
 class SelectState(InputSelector):
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.image = mikeys.state
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         return super().forward(mapped_inputs[self.image])
 
 class SelectSurface(InputSelector):
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.image = mikeys.surface
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
@@ -203,9 +202,15 @@ class SubPipeline(torch.nn.Module):
 
 
 class Pipeline(SubPipeline):
-    def __init__(self, *transforms, unpack_inputs: bool = True):
+    def __init__(
+            self,
+            *transforms,
+            unpack_inputs: bool = True,
+            skip_on_InputSelectorError: bool = False,
+        ):
         super().__init__(*transforms)
         self.unpack_inputs = unpack_inputs
+        self.skip_on_InputSelectorError = skip_on_InputSelectorError
         valid_first_transform = (InputSelector, ServeValue, PipelineModule, RandomChoice)
         assert isinstance(
             self.transforms[0], valid_first_transform
@@ -245,7 +250,14 @@ class Pipeline(SubPipeline):
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         self.initialize(mapped_inputs)
 
-        x = self._collect_input(self.transforms[0], mapped_inputs)
-        x = self._transform_input(self.transforms[1:], mapped_inputs, x)
+        try:
+            x = self._collect_input(self.transforms[0], mapped_inputs)
+        except InputSelectorError as e:
+            if self.skip_on_InputSelectorError:
+                x = None
+            else:
+                raise e
+        else:
+            x = self._transform_input(self.transforms[1:], mapped_inputs, x)
 
         return x

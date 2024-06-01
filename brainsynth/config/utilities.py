@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import yaml
 
 from brainsynth import root_dir
-from brainsynth.constants import constants
+from brainsynth.constants import IMAGE
 
 def load_config(filename=None):
     config_dir = root_dir / "config"
@@ -30,7 +30,7 @@ def path_constructor(loader, node):
     return Path(loader.construct_scalar(node))
 
 def labeling_scheme_constructor(loader, node):
-    return getattr(constants.labeling_scheme, loader.construct_scalar(node))
+    return getattr(IMAGE.labeling_scheme, loader.construct_scalar(node))
 
 def include_constructor(loader, node):
     # os.path.join(os.path.dirname(loader.name), node.value)

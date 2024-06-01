@@ -47,7 +47,8 @@ class OneHotEncoding(BaseTransform):
 
     def forward(self, x: torch.Tensor):
         assert not x.is_floating_point()
+        spatial_shape = x.shape[-3:]
         n = x.numel()
         out = torch.zeros((self.num_classes, n), dtype=x.dtype, device=x.device)
         out[x.ravel(), torch.arange(n, dtype=torch.int)] = 1
-        return out.reshape(self.num_classes, *x.shape)
+        return out.reshape(self.num_classes, *spatial_shape)

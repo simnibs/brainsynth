@@ -1,10 +1,9 @@
 import torch
 
-from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
+from brainsynth.constants import IMAGE
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
-from brainsynth.transforms.filters import GaussianSmooth
 
-
+gl = IMAGE.generation_labels
 class SynthesizeIntensityImage(BaseTransform):
     def __init__(
         self,
@@ -12,40 +11,43 @@ class SynthesizeIntensityImage(BaseTransform):
         mu_scale: float,
         sigma_offset: float,
         sigma_scale: float,
-        add_partial_volume: bool = True,
         photo_mode: bool = False,
         min_cortical_contrast: float = 25.0,
         device: None | torch.device = None,
     ):
         super().__init__(device)
-
-        self.add_partial_volume = add_partial_volume
         self.photo_mode = photo_mode
         self.min_cortical_contrast = min_cortical_contrast
 
         self.sample_gaussians(mu_offset, mu_scale, sigma_offset, sigma_scale)
 
     def sample_gaussians(self, mu_offset, mu_scale, sigma_offset, sigma_scale):
-        # extracerebral tissue (from k-means clustering) are added as
-        # 500 + label so we need to take this into account, hence the value of
-        # n
-        n = 500 + 10
-        mu = mu_offset + mu_scale * torch.rand(n, device=self.device)
-        sigma = sigma_offset + sigma_scale * torch.rand(n, device=self.device)
+        # Generate Gaussians
+        # ------------------
+        mu = torch.zeros(gl.n_labels, device=self.device)
+        sigma = torch.zeros(gl.n_labels, device=self.device)
 
-        scale_factor = mu / (mu_offset + mu_scale)
-        sigma *= scale_factor
+        n = gl.label_range[1] - gl.label_range[0]
+        slc = slice(*gl.label_range)
+
+        mu[slc] = mu_offset + mu_scale * torch.rand(n)
+        sigma[slc] = sigma_offset + sigma_scale * torch.rand(n)
+
+        scale_factor = mu[slc] / (mu_offset + mu_scale)
+        sigma[slc] *= scale_factor
 
         # set the background to zero every once in a while (or always in photo mode)
-        if self.photo_mode or torch.rand(1, device=self.device) < 0.5:
+        if self.photo_mode : # or torch.rand(1, device=self.device) < 0.5:
             mu[0] = 0
 
+        # Ensure contrast
+        # ---------------
         # Ensure that there is *some* contrast between white and gray matter
         # and gray matter and CSF.
         #   20 seems OK
         #   50 always gives nice contrast everytime
         if self.min_cortical_contrast > 0.0:
-            for i in (2, 3):
+            for i in (gl.white, gl.gray):
                 d = mu[i] - mu[i + 1]
                 if (ad := d.abs()) < self.min_cortical_contrast:
                     correction = self.min_cortical_contrast - ad
@@ -54,10 +56,35 @@ class SynthesizeIntensityImage(BaseTransform):
                     else:
                         mu[i + 1] -= correction
 
+        # Partial volume information
+        # --------------------------
+        # mix parameters
+        frac = torch.linspace(0, 1, 50, device=self.device)
+
+        mu[gl.pv.lesion:gl.pv.white] = mu[gl.lesion] + frac * (mu[gl.white]-mu[gl.lesion])
+        mu[gl.pv.white:gl.pv.gray]   = mu[gl.white]  + frac * (mu[gl.gray]-mu[gl.white])
+        mu[gl.pv.gray:gl.pv.csf]     = mu[gl.gray]   + frac * (mu[gl.csf]-mu[gl.gray])
+        mu[gl.pv.csf]                = mu[gl.csf]
+
+        sigma[gl.pv.lesion:gl.pv.white] = sigma[gl.lesion] + frac * (sigma[gl.white]-sigma[gl.lesion])
+        sigma[gl.pv.white:gl.pv.gray]   = sigma[gl.white]  + frac * (sigma[gl.gray]-sigma[gl.white])
+        sigma[gl.pv.gray:gl.pv.csf]     = sigma[gl.gray]   + frac * (sigma[gl.csf]-sigma[gl.gray])
+        sigma[gl.pv.csf]                = sigma[gl.csf]
+
+        # mu[100:150] = mu[1] + frac * (mu[2]-mu[1])
+        # mu[150:200] = mu[2] + frac * (mu[3]-mu[2])
+        # mu[200:250] = mu[3] + frac * (mu[4]-mu[3])
+        # mu[250] = mu[4]
+
+        # sigma[100:150] = sigma[1] + frac * (sigma[2]-sigma[1])
+        # sigma[150:200] = sigma[2] + frac * (sigma[3]-sigma[2])
+        # sigma[200:250] = sigma[3] + frac * (sigma[4]-sigma[3])
+        # sigma[250] = sigma[4]
+
         self.mu = mu
         self.sigma = sigma
 
-    def sample_image_from_gaussians(self, label: torch.Tensor):
+    def sample_image(self, label: torch.Tensor):
         # sample synthetic image from gaussians
         # a = mu[Gr]
         # b = sigma[Gr]
@@ -65,52 +92,15 @@ class SynthesizeIntensityImage(BaseTransform):
         # SYN = a + b * c
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
-        label = label.round().long()
         return self.mu[label] + self.sigma[label] * torch.randn(
             label.shape, device=self.device
         )
 
-    def add_partial_volume_effect(self, label: torch.Tensor, image: torch.Tensor):
-        if not self.add_partial_volume:
-            return image
-
-        # That is, 2 < label < 4
-        # wm = lut.Left_Cerebral_White_Matter
-        # gm = lut.Left_Lateral_Ventricle
-        mask = (label > lut.Left_Cerebral_White_Matter) & (
-            label < lut.Left_Lateral_Ventricle
-        )
-
-        if mask.any():  # only if we have partial volume information
-
-            Gv = label[mask]
-            isv = torch.zeros(Gv.shape, device=self.device)
-            # e.g., 2.25 -> 75 % WM
-            pw = (Gv <= 3) * (3 - Gv)
-            isv += pw * self.mu[2] + pw * self.sigma[2] * torch.randn(
-                Gv.shape, device=self.device
-            )
-            # e.g., 2.75 -> 25 % GM and 3.25 -> 75 % GM
-            pg = (Gv <= 3) * (Gv - 2) + (Gv > 3) * (4 - Gv)
-            isv += pg * self.mu[3] + pg * self.sigma[3] * torch.randn(
-                Gv.shape, device=self.device
-            )
-            # e.g., 3.25 -> 25 CSF
-            pcsf = (Gv >= 3) * (Gv - 3)
-            isv += pcsf * self.mu[4] + pcsf * self.sigma[4] * torch.randn(
-                Gv.shape, device=self.device
-            )
-
-            # this will also kill the random gaussian noise in the PV areas
-            image[mask] = isv
-
-        return image
-
     def forward(self, label):
-        image = self.sample_image_from_gaussians(label)
-        image = self.add_partial_volume_effect(label, image)
+        return self.sample_image(label)
+        # image = self.sample_image(label)
         # image[image < lut.Unknown] = lut.Unknown # clip
-        return image
+        # return image
 
 class RandMaskRemove(RandomizableTransform):
     def __init__(
