@@ -43,6 +43,7 @@ GenerationLabels = namedtuple(
 # For example, 151, 152, ..., 199 encode fractional steps from WM to GM.
 PartialVolume = namedtuple("PartialVolume", ("lesion", "white", "gray", "csf"))
 
+
 # Image name to image filename mapper
 Images = namedtuple(
     "ImageFiles",
@@ -115,6 +116,20 @@ class ImageSettings:
         )
         self.dist_maps = {"lp_dist_map", "lw_dist_map", "rp_dist_map", "rw_dist_map"}
 
+        self.default_images = [
+            "brain_dist_map",
+            "brainseg",
+            "brainseg_with_extracerebral",
+            "generation_labels",
+            "mni_reg_x",
+            "mni_reg_y",
+            "mni_reg_z",
+            "lp_dist_map",
+            "lw_dist_map",
+            "rp_dist_map",
+            "rw_dist_map",
+            "t1w",
+        ]
 
 # ---------------------------
 # SURFACES

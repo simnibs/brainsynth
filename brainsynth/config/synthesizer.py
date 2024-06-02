@@ -1,9 +1,11 @@
+
 import torch
 
 from brainsynth.constants import IMAGE
 from brainsynth.transforms.spatial import GridCentering
 
-class AugmentationConfig:
+
+class SynthesizerConfig:
     def __init__(
         self,
         pipeline: str = "DefaultPipeline",
@@ -30,7 +32,9 @@ class AugmentationConfig:
         assert torch.all(self.out_size % 2 == 0), "Output FOV should be divisible by 2."
 
         self.align_corners = align_corners
-        assert align_corners == True, "Spatial augmentation is untested with align_corners = False and probably does not work properly."
+        assert (
+            align_corners == True
+        ), "Spatial augmentation is untested with align_corners = False and probably does not work properly."
         self.grid = torch.stack(
             torch.meshgrid(
                 [
@@ -61,9 +65,8 @@ class AugmentationConfig:
         self.photo_thickness = photo_thickness
 
         # if alternative_images is not None:
-            # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)
+        # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)
         self.alternative_images = alternative_images
 
     def __repr__(self):
-        return "\n".join([f"{k}: {v}" for k,v in self.__dict__.items()])
-
+        return "\n".join([f"{k}: {v}" for k, v in self.__dict__.items()])

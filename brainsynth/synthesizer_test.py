@@ -1,5 +1,5 @@
-from brainsynth.config.augmentation import AugmentationConfig
-from brainsynth.dataset import AugmentedDataset
+from brainsynth.config import DatasetConfig, SynthesizerConfig
+from brainsynth.dataset import SynthesizedDataset, setup_dataloader
 from brainsynth.synthesizer import Synthesizer
 
 from brainnet.mesh.topology import get_recursively_subdivided_topology
@@ -16,26 +16,25 @@ if __name__ == "__main__":
 
     out = Path("/home/jesperdn/nobackup")
 
-    config = AugmentationConfig(
+    synthconf = SynthesizerConfig(
         device="cuda:0",
         alternative_images=("t1w", "t2w"),
         # out_center_str="lh",
         segmentation_labels="brainseg",
     )
-    self = Synthesizer(config)
+    self = Synthesizer(synthconf)
 
-    ds = AugmentedDataset(
-        ds_dir="/mnt/projects/CORTECH/nobackup/training_data",
-        ds_name="ADHD200",
-        subjects=["sub-001", "sub-010"],
-        synthesizer=None,
-        images=["generation_labels", "brainseg", "t1w"],
-        ds_structure="flat",
-        target_surface_resolution=5,
-        target_surface_hemispheres="lh",
-        initial_surface_resolution=0,
+    dsconf = DatasetConfig(
+        "/mnt/projects/CORTECH/nobackup/training_data",
+        "/mnt/projects/CORTECH/nobackup/training_data_subjects",
+        subject_subset="train",
+    )
+    ds = SynthesizedDataset(
+        **dsconf.dataset_kwargs["AIBL"]
     )
     images, surfaces, initial_vertices = ds[1]
+
+    dl = setup_dataloader(dsconf.dataset_kwargs)
 
     # images = {k:v[..., :-1] for k,v in images.items()}
     a, b, c = self(images, surfaces, initial_vertices)

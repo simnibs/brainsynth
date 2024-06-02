@@ -1,13 +1,13 @@
 import torch
 
 from brainsynth.constants import mapped_input_keys as mikeys
-from brainsynth.config.augmentation import AugmentationConfig
+from brainsynth.config import SynthesizerConfig
 import brainsynth.config.pipelines
 from brainsynth.transforms import EnsureDevice, Pipeline
 
 
 class Synthesizer(torch.nn.Module):
-    def __init__(self, config: AugmentationConfig):
+    def __init__(self, config: SynthesizerConfig):
         super().__init__()
         self.config = config
         self.ensure_device = EnsureDevice(self.config.device)

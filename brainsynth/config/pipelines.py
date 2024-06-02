@@ -1,7 +1,7 @@
 from functools import partial
 
 from brainsynth.constants import mapped_input_keys as mikeys
-from brainsynth.config.augmentation import AugmentationConfig
+from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
 
 # Use from_image("T1w") instead of "image:T1w".
@@ -15,7 +15,7 @@ class PipelineBuilder:
     def __init__(self) -> None:
         pass
 
-    def build(self, config: AugmentationConfig):
+    def build(self, config: SynthesizerConfig):
         raise NotImplementedError()
 
 
@@ -23,7 +23,7 @@ class DefaultPipeline(PipelineBuilder):
     def __init__(self) -> None:
         super().__init__()
 
-    def build(self, config: AugmentationConfig):
+    def build(self, config: SynthesizerConfig):
         """
         Pipeline provides `mapped_inputs` which are needed when calling InputSelector.
         Hence, all InputSelectors must be used *in* a Pipeline.

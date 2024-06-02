@@ -6,9 +6,6 @@ import torch
 
 from brainsynth.constants import IMAGE, SURFACE
 
-filename_subjects = lambda dataset: f"{dataset}.txt"
-filename_subjects_subset = lambda dataset, subset: f"{dataset}_{subset}.txt"
-
 
 def atleast_4d(tensor):
     return atleast_4d(tensor[None]) if tensor.ndim < 4 else tensor
@@ -18,11 +15,11 @@ def load_dataset_subjects(filename):
     return np.genfromtxt(filename, dtype="str").tolist()
 
 
-class AugmentedDataset(torch.utils.data.Dataset):
+class SynthesizedDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        ds_dir: str | Path,
-        ds_name: str,
+        root_dir: str | Path,
+        name: str,
         subjects: None | str | list | tuple = None,
         synthesizer=None,
         images: None | list | tuple = None,
@@ -62,7 +59,7 @@ class AugmentedDataset(torch.utils.data.Dataset):
 
         ds = SynthesizedDataset(
             ds_dir="/mnt/projects/CORTECH/nobackup/training_data",
-            ds_name = "HCP",
+            name = "HCP",
             subjects=["sub-001", "sub-010"],
             synthesizer=None,
             images=["generation_labels", "brainseg", "t1w"],
@@ -84,7 +81,7 @@ class AugmentedDataset(torch.utils.data.Dataset):
         synthesizer:
             Configured synthesizer
         """
-        self._initialize_io_settings(ds_dir, ds_name, ds_structure, subjects)
+        self._initialize_io_settings(root_dir, name, ds_structure, subjects)
         self._initialize_image_settings(images)
         self._initialize_target_surface_settings(
             target_surface_resolution, target_surface_hemispheres
@@ -98,14 +95,14 @@ class AugmentedDataset(torch.utils.data.Dataset):
             assert synthesizer.device == torch.device("cpu")
         self.synthesizer = synthesizer
 
-    def _initialize_io_settings(self, ds_dir, ds_name, ds_structure, subjects):
+    def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
         self.ds_dir = Path(ds_dir)
-        self.ds_name = ds_name
+        self.name = name
         self.ds_structure = ds_structure
 
         # Subjects
         self.subjects = (
-            load_dataset_subjects(subjects) if isinstance(subjects, str) else subjects
+            load_dataset_subjects(subjects) if isinstance(subjects, (Path, str)) else subjects
         )
 
         # Filename generators
@@ -113,19 +110,19 @@ class AugmentedDataset(torch.utils.data.Dataset):
             case "flat":
 
                 def get_image_filename(subject, image):
-                    return self.ds_dir / f"{self.ds_name}.{subject}.{image}"
+                    return self.ds_dir / f"{self.name}.{subject}.{image}"
 
                 def get_surface_filename(subject, surface):
-                    # return self.ds_dir / f"{self.ds_name}.{subject}.{surface}"
-                    return self.ds_dir / f"{self.ds_name}.{subject}.surf_dir" / surface
+                    # return self.ds_dir / f"{self.name}.{subject}.{surface}"
+                    return self.ds_dir / f"{self.name}.{subject}.surf_dir" / surface
 
             case "tree":
 
                 def get_image_filename(subject, image):
-                    return self.ds_dir / self.ds_name / subject / image
+                    return self.ds_dir / self.name / subject / image
 
                 def get_surface_filename(subject, surface):
-                    return self.ds_dir / self.ds_name / subject / surface
+                    return self.ds_dir / self.name / subject / surface
 
         self.get_image_filename = get_image_filename
         self.get_surface_filename = get_surface_filename
@@ -249,9 +246,7 @@ class AugmentedDataset(torch.utils.data.Dataset):
         return {
             h: {
                 t: torch.load(
-                    self.get_surface_filename(
-                        subject, SURFACE.files.target[h, t, r]
-                    )
+                    self.get_surface_filename(subject, SURFACE.files.target[h, t, r])
                 )
                 for t in SURFACE.types
             }
@@ -266,6 +261,9 @@ class AugmentedDataset(torch.utils.data.Dataset):
             )
             for h in hemi
         }
+
+    def __repr__(self):
+        return f"{self.__class__.__name__} {self.name} in {self.ds_dir/self.name}"
 
     # def load_surfaces(self, subject_dir):
     #     if self.target_surface_resolution is None:
@@ -318,38 +316,24 @@ def make_dataloader(
 
 
 def setup_dataloader(
-    subjects: dict,
-    synthesizer,
-    dataset_kwargs,
-    dataloader_kwargs,
+    dataset_kwargs: dict[dict],
+    dataloader_kwargs: dict | None = None,
 ):
     """Construct a dataloader by concatenating `datasets` (e.g., ds0, ds1).
 
     Parameters
     ----------
-    base_dir :
-        Base directory containing datasets. A dataset is found in
-        base_dir / dataset_name.
-    datasets :
-        List of dataset names.
     dataset_kwargs :
-        Kwargs passed to dataset constructor.
+        List or tuple of dicts containing kwargs with which to initialize each
+        dataset.
     dataloader_kwargs:
         Kwargs passed to dataloader constructor.
     """
-    dataset_kwargs = dataset_kwargs or {}
     dataloader_kwargs = dataloader_kwargs or {}
 
     # Individual datasets
     concat_ds = torch.utils.data.ConcatDataset(
-        [
-            AugmentedDataset(
-                subjects=load_dataset_subjects(subjects[k]),
-                synthesizer=synthesizer,
-                **v,
-            )
-            for k, v in dataset_kwargs.items()
-        ]
+        [SynthesizedDataset(**kw) for kw in dataset_kwargs.values()]
     )
     # original datasets are in
     # dataloader.dataset.dataset.datasets
@@ -418,80 +402,31 @@ def setup_dataloader(
 #     return dataloader
 
 
-def split_dataset(
-    dataset: torch.utils.data.Dataset, splits: dict, rng_seed: None | int = None
-):
-    """_summary_
-
-    Parameters
-    ----------
-    dataset : Dataset
-        _description_
-    splits : dict
-        _description_
-    rng_seed : None | int, optional
-        _description_, by default None
-
-    Returns
-    -------
-    dict
-        Dictionary of subsets of dataset (.indices contains indices of the data
-        in a given subset).
-    """
-    names = list(splits.keys())
-    fractions = list(splits.values())
-    if rng_seed is not None:
-        torch.manual_seed(rng_seed)
-    return dict(zip(names, torch.utils.data.random_split(dataset, fractions)))
-
-
 # def split_dataset(
-#         subjects: list | tuple | npt.NDArray,
-#         split: dict,
-#         split_fraction: list | tuple | npt.NDArray,
-#         names: list | tuple,
-#         seed: None | int = None
-#     ):
-#     """Split `subjects` into several arrays according to `split_fraction`. The
-#     elements of `subjects` are permuted before the splitting is performed.
+#     dataset: torch.utils.data.Dataset, splits: dict, rng_seed: None | int = None
+# ):
+#     """_summary_
 
 #     Parameters
 #     ----------
-#     subjects : _type_
+#     dataset : Dataset
 #         _description_
-#     split: dict
-#         The fractions at which to split `subjects`, e.g.,
-
-#             {train: 0.8, validation: 0.2}
-#             {train: 0.7, validation: 0.2, test: 0.1}
-
-#     split_fraction : list | tuple | ...
-#         The fractions at which to split `subjects`, e.g., [0.8] or [0.7, 0.9]
-#         will result in two or three subarrays, respectively.
-#     names : list | tuple
-#         Names of the resulting subarrays, e.g., ["train", "validation"] or
-#         ["train", "validation", "test"].
-#     seed : _type_, optional
+#     splits : dict
+#         _description_
+#     rng_seed : None | int, optional
 #         _description_, by default None
 
 #     Returns
 #     -------
-#     _type_
-#         _description_
+#     dict
+#         Dictionary of subsets of dataset (.indices contains indices of the data
+#         in a given subset).
 #     """
-#     split_fractions = np.array(list(split.values()))
-#     assert split_fractions.sum() == 1.0
-#     assert len(names) == len(split_fraction) + 1
-#     split_fraction = np.array(split_fraction)
-#     assert np.all(split_fraction > 0) and np.all(split_fraction < 1)
-#     n_subjects = len(subjects)
-
-#     rng = np.random.default_rng(seed)
-#     perm = rng.permutation(n_subjects)
-
-#     splitter = np.round(np.array(split_fraction) * n_subjects).astype(int)
-
-#     return dict(zip(names, np.array_split(subjects[perm], splitter)))
+#     names = list(splits.keys())
+#     fractions = list(splits.values())
+#     if rng_seed is not None:
+#         torch.manual_seed(rng_seed)
+#     return dict(zip(names, torch.utils.data.random_split(dataset, fractions)))
 
 
 def write_dataset_subjects(
@@ -532,7 +467,8 @@ def write_dataset_subjects(
 
         data_dir = "/mnt/projects/CORTECH/nobackup/training_data"
         out_dir = "/mnt/projects/CORTECH/nobackup/training_data_subjects"
-
+        subsets = dict(train=0.8, test=0.1, validation=0.1)
+        write_dataset_subjects(data_dir, out_dir, subsets)
 
     Parameters
     ----------
@@ -573,7 +509,7 @@ def write_dataset_subjects(
         for ds, subs in subjects.items():
             arr = make_subsets(subs, subsets, rng_seed)
             for name, subarr in zip(subsets, arr):
-                np.savetxt(out_dir / f"{ds}_{name}.txt", subarr, fmt="%s")
+                np.savetxt(out_dir / f"{ds}.{name}.txt", subarr, fmt="%s")
 
 
 def make_subsets(subs, subsets: dict, rng_seed: int | None = None):
@@ -586,7 +522,7 @@ def make_subsets(subs, subsets: dict, rng_seed: int | None = None):
     rng.shuffle(subs)
     n = len(subs)
     index = [np.round(n * f).astype(int) for f in fractions[:-1]]
-    return np.split(subs, index)
+    return tuple(np.sort(i) for i in np.split(subs, index))
 
 
 # def write_dataset_subjects(
