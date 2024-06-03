@@ -2,7 +2,7 @@ import torch
 
 from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config import SynthesizerConfig
-import brainsynth.config.pipelines
+import brainsynth.config.synthesizer_builder
 from brainsynth.transforms import EnsureDevice, Pipeline
 
 
@@ -12,7 +12,7 @@ class Synthesizer(torch.nn.Module):
         self.config = config
         self.ensure_device = EnsureDevice(self.config.device)
 
-        self.pipeline = getattr(brainsynth.config.pipelines, config.pipeline)()
+        self.builder = getattr(brainsynth.config.synthesizer_builder, config.builder)()
 
     def execute(self, pipelines: dict, mapped_inputs: dict, out: dict | None = None):
         out = out if out is not None else {}
@@ -44,7 +44,7 @@ class Synthesizer(torch.nn.Module):
         }
 
         # Build the pipelines
-        state_pipeline, output_pipeline = self.pipeline.build(self.config)
+        state_pipeline, output_pipeline = self.builder.build(self.config)
 
         # Set the state
         mapped_inputs["state"] = self.execute(

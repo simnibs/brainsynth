@@ -38,6 +38,8 @@ class InputSelectorError(Exception):
 
 class InputSelector(torch.nn.Module):
     def __init__(self, *args):
+        """General class for input selection from the mapped inputs dictionary.
+        """
         super().__init__()
         self.selection = args
 
@@ -57,30 +59,10 @@ class InputSelector(torch.nn.Module):
         self,
         mapped_inputs: dict[str, torch.Tensor] | dict[str, dict[str, torch.Tensor]],
     ):
+        """Select an input by recursing into `mapped_inputs` using the
+        selection arguments (e.g., when selection = [a,b,c] select
+        mapped_inputs[a][b][c]).
         """
-            images: dict[str, torch.Tensor],
-            surfaces: dict[str, dict[str, torch.Tensor]],
-            initial_vertices: dict[str, torch.Tensor],
-            state: dict[str, torch.Tensor],
-
-        image:T1w
-        image:segmentation  grabs ["segmentation"] from the dict of input images
-        surface:lh:white    grabs ["lh"]["white"] from the dict of input surfaces
-
-        state
-            in_size         input size
-            out_size        output field-of-view
-            grid            image grid (same shape as out_size)
-            scale           the average scaling of the inputs (from the linear transformation)
-
-        """
-
-        # self.mapped_inputs = dict(
-        #     image=images,
-        #     surface=surfaces,
-        #     initial_vertices=initial_vertices,
-        #     state=state,
-        # )
         if len(self.selection) == 0:
             return mapped_inputs
         elif len(self.selection) == 1:
@@ -93,6 +75,9 @@ class InputSelector(torch.nn.Module):
 
 class SelectImage(InputSelector):
     def __init__(self, *args, **kwargs):
+        """Convenience class to select images from the mapped inputs
+        dictionary.
+        """
         super().__init__(*args, **kwargs)
         self.image = mikeys.image
 
@@ -102,6 +87,9 @@ class SelectImage(InputSelector):
 
 class SelectInitialVertices(InputSelector):
     def __init__(self, *args, **kwargs):
+        """Convenience class to select initial vertices from the mapped inputs
+        dictionary.
+        """
         super().__init__(*args, **kwargs)
         self.image = mikeys.initial_vertices
 
@@ -111,6 +99,9 @@ class SelectInitialVertices(InputSelector):
 
 class SelectState(InputSelector):
     def __init__(self, *args, **kwargs):
+        """Convenience class to select from the state entry in the mapped
+        inputs dictionary.
+        """
         super().__init__(*args, **kwargs)
         self.image = mikeys.state
 
@@ -119,6 +110,9 @@ class SelectState(InputSelector):
 
 class SelectSurface(InputSelector):
     def __init__(self, *args, **kwargs):
+        """Convenience class to select surfaces from the mapped inputs
+        dictionary.
+        """
         super().__init__(*args, **kwargs)
         self.image = mikeys.surface
 
@@ -128,6 +122,12 @@ class SelectSurface(InputSelector):
 
 class PipelineModule:
     def __init__(self, transform: Type[torch.nn.Module], *args, **kwargs) -> None:
+        """This class takes a transformation class and args and kwargs to
+        initialize this class. The initialization of the transformation will
+        happen when the pipeline, which the PipelineModule is part of, is run.
+        This allows us to initialize a transformation with a variable that is
+        only available at runtime.
+        """
         self.transform = transform
         self.args = args or []
         self.kwargs = kwargs or {}
@@ -163,6 +163,13 @@ class PipelineModule:
 
 class SubPipeline(torch.nn.Module):
     def __init__(self, *transforms):
+        """Partial pipeline which takes an input and transforms it. That is,
+        contrary to Pipeline, it should not include an input selection as the
+        first step. That main motivation for this class is efficiency: it
+        allows one to initializing a sequence of transformations and then reuse
+        it in several pipelines. If the individial transformations were simply
+        put in to each pipeline, then they would be initialized each time.
+        """
         super().__init__()
         self.transforms = list(transforms)
         self.is_initialized = False
@@ -208,6 +215,9 @@ class Pipeline(SubPipeline):
             unpack_inputs: bool = True,
             skip_on_InputSelectorError: bool = False,
         ):
+        """Pipeline class. The first step of a pipeline is to select the input
+        to transform. Subsequent steps define the transformations applied to
+        this input."""
         super().__init__(*transforms)
         self.unpack_inputs = unpack_inputs
         self.skip_on_InputSelectorError = skip_on_InputSelectorError
@@ -226,7 +236,7 @@ class Pipeline(SubPipeline):
                 if isinstance(x, Pipeline):
                     x = x(mapped_inputs)
             case _:
-                raise RuntimeError(f"Invalid first transform {t}")
+                raise RuntimeError(f"Invalid first transform {transform}")
         return x
 
     def _transform_element(self, transforms, mapped_inputs, x):

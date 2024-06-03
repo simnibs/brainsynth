@@ -8,7 +8,7 @@ from brainsynth.transforms.spatial import GridCentering
 class SynthesizerConfig:
     def __init__(
         self,
-        pipeline: str = "DefaultPipeline",
+        builder: str = "DefaultSynthBuilder",
         in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
         out_size: list[int] | tuple[int, int, int] = (192, 192, 192),
         align_corners: bool = True,
@@ -22,7 +22,7 @@ class SynthesizerConfig:
     ):
         self.device = torch.device(device)
 
-        self.pipeline = pipeline
+        self.builder = builder
 
         assert len(in_res) == 3
         self.in_res = torch.tensor(in_res, device=self.device)

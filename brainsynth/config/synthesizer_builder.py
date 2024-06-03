@@ -11,7 +11,7 @@ from_surface = lambda x: f"{mikeys.surface}:{x}"
 from_state = lambda x: f"{mikeys.state}:{x}"
 
 
-class PipelineBuilder:
+class SynthBuilder:
     def __init__(self) -> None:
         pass
 
@@ -19,32 +19,28 @@ class PipelineBuilder:
         raise NotImplementedError()
 
 
-class DefaultPipeline(PipelineBuilder):
+class DefaultSynthBuilder(SynthBuilder):
     def __init__(self) -> None:
         super().__init__()
 
     def build(self, config: SynthesizerConfig):
-        """
-        Pipeline provides `mapped_inputs` which are needed when calling InputSelector.
-        Hence, all InputSelectors must be used *in* a Pipeline.
+        """Build a full synthesizer pipeline by collecting multiple Pipeline
+        instances.
 
-        PipelineModule defers class initialization until runtime and provides `mapped_inputs`
-        at class instatiation. Consequently, all PipelineModules must be used *in* a
-        Pipeline.
-        By deferring initialization until runtime, PipelineModule allows transforms to be
-        initialized with arguments whose values are only available at runtime.
+        Parameters
+        ----------
+        config : SynthesizerConfig
 
 
         Returns
         -------
         state :
             A dictionary of Pipelines/transformations that updates the state of
-            the synthesizer each time it is called
+            the synthesizer each time it is called.
         output :
             A dictionary of Pipelines/transformations that generates the
             outputs, e.g., a synthesized image and processed T1, T2, surfaces,
             etc.
-
         """
         device = config.device
 
@@ -89,14 +85,13 @@ class DefaultPipeline(PipelineBuilder):
                 SelectImage("generation_labels"),
                 SpatialSize(),
             ),
-            #
+            # SurfaceBoundingBox needs some work
             surface_bbox=Pipeline(
                 SelectInitialVertices(),
-                # InputSelector("surface:lh:pial"),
                 SurfaceBoundingBox(),
                 unpack_inputs=False,
             ),
-            # center of FOV (output) in the input image(s)
+            # where to center the (output) FOV in the input image space
             out_center=Pipeline(
                 ServeValue(config.out_center_str),
                 PipelineModule(
@@ -163,6 +158,7 @@ class DefaultPipeline(PipelineBuilder):
                 SelectImage("t1w"),
                 image_deformation,
                 intensity_normalization,
+                # This pipeline is allowed to fail if the input is not found
                 skip_on_InputSelectorError=True,
             ),
             t1w_mask=Pipeline(
@@ -187,10 +183,10 @@ class DefaultPipeline(PipelineBuilder):
                 OneHotEncoding(config.segmentation_num_labels),
                 skip_on_InputSelectorError=True,
             ),
+            # Synthesize image or select an actual image
             image=Pipeline(
                 RandomChoice(
                     [
-                        # Synthesize image
                         Pipeline(
                             SelectImage("generation_labels"),
                             SynthesizeIntensityImage(
@@ -205,26 +201,21 @@ class DefaultPipeline(PipelineBuilder):
                             # RandGaussianNoise(),
                             RandGammaTransform(mean=0.0, std=1.0, prob=0.75),
                         ),
-                        # Select actual image
                         Pipeline(
-                            # SelectImage(
-                            #     RandomChoice(["image:T1w", "image:T2w"], prob=(0.5, 0.5))(),
-                            # )
                             # select one of the available contrasts...
                             PipelineModule(
                                 SelectImage,
                                 PipelineModule(
                                     RandomChoice,
                                     SelectState("available_images"),
+                                    # equal probability of selecting each image
                                 ),
                             ),
                         ),
                     ],
                     prob=(1.0, 0.0),
                 ),
-                #
                 image_deformation,
-                # Biasfield
                 RandBiasfield(
                     config.out_size,
                     scale_min=0.02,
@@ -235,7 +226,6 @@ class DefaultPipeline(PipelineBuilder):
                     prob=0.9,
                     device=device,
                 ),
-                # Resolution
                 PipelineModule(
                     RandResolution,
                     config.out_size,
