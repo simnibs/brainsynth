@@ -73,6 +73,9 @@ MetaData = namedtuple(
     "ImageData",
     ("filename", "dtype", "defacingmask"),
 )
+
+MNIDeformFields = namedtuple("DeformationFields", ("forward", "backward"))
+
 class ImageSettings:
     def __init__(self):
         self.labeling_scheme = LabelingScheme(
@@ -130,6 +133,11 @@ class ImageSettings:
             "rw_dist_map",
             "t1w",
         ]
+
+        self.mni_deform = MNIDeformFields(
+            forward=MetaData("deform_forward.nii", torch.float, None),
+            backward=MetaData("deform_backward.nii", torch.float, None),
+        )
 
 # ---------------------------
 # SURFACES

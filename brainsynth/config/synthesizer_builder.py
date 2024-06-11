@@ -53,7 +53,7 @@ class DefaultSynthBuilder(SynthBuilder):
             scale_min=0.03,
             scale_max=0.06,
             std_max=4.0,
-            backward_field_estimation=True,
+            exponentiate_field=True,
             grid=config.grid,
             prob=1.0,
             device=device,

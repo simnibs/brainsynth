@@ -58,6 +58,7 @@ class SpatialCrop(BaseTransform):
         out[..., *self.slice_out] = image[..., *self.slice_in]
         return out
 
+
 class TranslationTransform(BaseTransform):
     def __init__(
         self,
@@ -176,8 +177,8 @@ class RandNonlinearTransform(RandomizableTransform):
         scale_min: float,
         scale_max: float,
         std_max: float,
-        backward_field_estimation: bool = False,
-        backward_field_int_steps: int = 8,
+        exponentiate_field: bool = False,
+        scale_and_square_steps: int = 8,
         grid: None | torch.Tensor = None,
         photo_mode: bool = False,
         device: None | torch.device = None,
@@ -201,14 +202,17 @@ class RandNonlinearTransform(RandomizableTransform):
         self.scale_min = scale_min
         self.scale_max = scale_max
         self.std_max = std_max
-        self.backward_field_estimation = backward_field_estimation
-        self.backward_field_int_steps = backward_field_int_steps
+        self.grid = grid
+        self.exponentiate_field = exponentiate_field
+        self.scale_and_square_steps = scale_and_square_steps
 
         if not self.should_apply_transform():
             self.trans = {}
             return
 
-        nonlin_scale = scale_min + torch.rand(1, device=self.device) * (scale_max - scale_min)
+        nonlin_scale = scale_min + torch.rand(1, device=self.device) * (
+            scale_max - scale_min
+        )
         size_F_small = torch.round(nonlin_scale * out_size).to(torch.int)
 
         if photo_mode:
@@ -218,32 +222,56 @@ class RandNonlinearTransform(RandomizableTransform):
         nonlin_std = std_max * torch.rand(1, device=self.device)
 
         # Channel first (as is normal)
-        fwd = nonlin_std * torch.randn([3, *size_F_small], device=self.device)
-        fwd = Resize(out_size)(fwd)
+        V = nonlin_std * torch.randn([3, *size_F_small], device=self.device)
+        V = Resize(out_size)(V)
 
         if photo_mode:
             # no deformation in AP direction
-            fwd[1] = 0
+            V[1] = 0
 
-        if backward_field_estimation:
+        if exponentiate_field:
             # this is slow on the CPU
-            steplength = 1.0 / (2.0**backward_field_int_steps)
+            steplength = 1.0 / (2.0**scale_and_square_steps)
 
             # forward integration
-            Fsvf_1 = fwd * steplength
-            for _ in torch.arange(backward_field_int_steps):
-                resample = GridSample(grid + self.channel_last(Fsvf_1), out_size)
-                Fsvf_1 += resample(Fsvf_1)
+            U = V * steplength
+            U = self.scale_and_square(U, self.scale_and_square_steps)
 
             # backward integration
-            Fsvf_neg_1 = -fwd * steplength
-            for _ in torch.arange(backward_field_int_steps):
-                resample = GridSample(grid + self.channel_last(Fsvf_neg_1), out_size)
-                Fsvf_neg_1 += resample(Fsvf_neg_1)
+            U_inv = -V * steplength
+            U_inv = self.scale_and_square(U_inv, self.scale_and_square_steps)
 
-            self.trans = dict(forward=Fsvf_1, backward=Fsvf_neg_1)
+            self.trans = dict(forward=U, backward=U_inv)
         else:
-            self.trans = dict(forward=fwd)
+            self.trans = dict(forward=V)
+
+    def scale_and_square(self, field, n_steps):
+        """Scale and square for matrix exponentiation.
+
+        Parameters
+        ----------
+        field : _type_
+            _description_
+        n_steps : _type_
+            _description_
+
+        Returns
+        -------
+        _type_
+            _description_
+
+        References
+        ----------
+        Ashburner (2007). A fast diffeomorphic image registration algorithm.
+        Arsigny (2006). A Log-Euclidean Framework for Statistics on
+            Diffeomorphisms.
+        """
+        if n_steps == 0:
+            return field
+        else:
+            resample = GridSample(self.grid + self.channel_last(field), self.out_size)
+            field += resample(field)
+            return self.scale_and_square(field, n_steps - 1)
 
     @staticmethod
     def channel_last(x):
@@ -259,6 +287,242 @@ class RandNonlinearTransform(RandomizableTransform):
                     return grid + sampler(self.trans[direction]).squeeze().T
         else:
             return grid
+
+
+# def apply_trans(trans, t):
+#     return t @ trans[:3, :3].T + trans[:3, 3]
+
+d = Path("/mnt/scratch/personal/jesperdn/training_data_deformations")
+s1 = "sub-0003"
+s2 = "sub-0004"
+
+s1_deform = torch.tensor(nib.load(d / f"ABIDE.{s1}.deform.nii").get_fdata()).float()
+s1_deform = s1_deform.permute((3, 0, 1, 2))
+
+s2_deform = torch.tensor(nib.load(d / f"ABIDE.{s2}.deform.nii").get_fdata()).float()
+s2_deform = s2_deform.permute((3, 0, 1, 2))
+
+
+A1 = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine.txt")).float()
+A2 = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine.txt")).float()
+A1B = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine_backward.txt")).float()
+A2B = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine_backward.txt")).float()
+
+S1A = torch.tensor(nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.T1w.nii").affine).float()
+S1AB = torch.linalg.inv(S1A)
+S2A = torch.tensor(nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii").affine).float()
+S2AB = torch.linalg.inv(S2A)
+
+s1_deform_backward = torch.tensor(
+    nib.load(d / f"ABIDE.{s1}.deform_backward.nii").get_fdata()
+).float()
+s1_deform_backward = s1_deform_backward.permute((3, 0, 1, 2))
+
+s2_deform_backward = torch.tensor(
+    nib.load(d / f"ABIDE.{s2}.deform_backward.nii").get_fdata()
+).float()
+s2_deform_backward = s2_deform_backward.permute((3, 0, 1, 2))
+
+s1_t1 = torch.tensor(
+    nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.T1w.nii")
+    .get_fdata()
+    .squeeze()[None]
+).float()
+s1_size = s1_t1.shape[-3:]
+
+s2_t1 = torch.tensor(
+    nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii")
+    .get_fdata()
+    .squeeze()[None]
+).float()
+s2_size = s2_t1.shape[-3:]
+
+self = Sub2SubWarpImage(s1_deform, s2_deform_backward, s1_size)
+out1 = self(s1_t1)
+affine = nib.load(d / f"ABIDE.{s2}.deform_backward.nii").affine
+nib.Nifti1Image(out1[0].numpy(), affine).to_filename(d / "out_s1-to-s2.nii")
+
+self = Sub2SubWarpImage(s2_deform, s1_deform_backward, s2_size)
+out2 = self(s2_t1)
+affine = nib.load(d / f"ABIDE.{s1}.deform_backward.nii").affine
+nib.Nifti1Image(out2[0].numpy(), affine).to_filename(d / "out_s2-to-s1.nii")
+
+
+size = [i for i in s2_size]
+
+metadata = dict(
+    head=[2, 0, 20],
+    valid="1  # volume info valid",
+    filename="vol.nii",
+    volume=size,
+    voxelsize=[1, 1, 1],
+    xras=[-1, 0, 0],
+    yras=[0, 0, -1],
+    zras=[0, 1, 0],
+    cras=[0, 0, 0],
+)
+
+s1_white = torch.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/lh.white.5.target.pt")
+s1_pial = torch.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/lh.pial.5.target.pt")
+
+self = Sub2SubWarpSurface(s1_deform_backward, s2_deform, s1_size)
+
+out1 = self(s1_white)
+nib.freesurfer.write_geometry(
+    d / "surf_lh.white_s1-to-s2",
+    (out1.float() @ S2A[:3,:3].T + S2A[:3, 3]).numpy(), top[5].faces.numpy(), volume_info=metadata)
+
+out1 = self(s1_pial)
+nib.freesurfer.write_geometry(
+    d / "surf_lh.pial_s1-to-s2",
+    (out1.float() @ S2A[:3,:3].T + S2A[:3, 3]).numpy(), top[5].faces.numpy(), volume_info=metadata)
+
+
+s1_white = torch.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/rh.white.5.target.pt")
+s1_pial = torch.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/rh.pial.5.target.pt")
+
+out1 = self(s1_white)
+nib.freesurfer.write_geometry(
+    d / f"surf_rh.white_s1-to-s2",
+    (out1.float() @ S2A[:3,:3].T + S2A[:3, 3]).numpy(), top[5].faces.numpy(), volume_info=metadata)
+
+out1 = self(s1_pial)
+nib.freesurfer.write_geometry(
+    d / f"surf_rh.pial_s1-to-s2",
+    (out1.float() @ S2A[:3,:3].T + S2A[:3, 3]).numpy(), top[5].faces.numpy(), volume_info=metadata)
+
+
+"""
+# AFFINE TRANSFORM
+
+A1 = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine.txt")).float()
+A2 = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine.txt")).float()
+A1B = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine_backward.txt")).float()
+A2B = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine_backward.txt")).float()
+
+S1A = torch.tensor(nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.T1w.nii").affine).float()
+S1AB = torch.linalg.inv(S1A)
+S2A = torch.tensor(nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii").affine).float()
+S2AB = torch.linalg.inv(S2A)
+
+
+grid = torch.stack(torch.meshgrid([torch.arange(i) for i in s2_size], indexing="ij")).float()
+grid = grid.permute((1,2,3,0))
+Ax = S1AB @ A1 @ A2B @ S2A
+grid = grid @ Ax[:3,:3].T + Ax[:3,3]
+
+sampler = GridSample(grid, s1_size)
+out11 = sampler(s1_t1)
+nib.Nifti1Image(out11[0].numpy(), S2A).to_filename(d / f"affine_{s1}-to-{s2}.nii")
+
+
+grid = torch.stack(torch.meshgrid([torch.arange(i) for i in s1_size], indexing="ij")).float()
+grid = grid.permute((1,2,3,0))
+Ay = S2AB @ A2 @ A1B @ S1A
+grid = grid @ Ay[:3,:3].T + Ay[:3,3]
+
+sampler = GridSample(grid, s2_size)
+out11 = sampler(s2_t1)
+nib.Nifti1Image(out11[0].numpy(), S2A).to_filename(d / f"affine_{s2}-to-{s1}.nii")
+
+"""
+
+
+class Sub2SubWarpImage(BaseTransform):
+    def __init__(
+        self,
+        s1_deform: torch.Tensor,
+        s2_deform_backward: torch.Tensor,
+        s1_size: torch.Tensor | torch.Size,
+        device: None | torch.device = None,
+    ) -> None:
+        """Warp an image from subject 1 (voxel) space to subject 2 (voxel)
+        space. The mapping is achieved by composing the supplied deformation
+        fields, i.e.,
+
+                      s1_deform            s2_deform_backward
+            S1[vox]     <---     MNI[vox]         <---          S2[vox]
+
+        such that, when applied to an image in subject 1 space, they will pull
+        the values into the space of subject 2.
+
+        Parameters
+        ----------
+        s1_deform: torch.Tensor
+            Forward deformation field of subject 1. The forward deformation
+            maps each voxel in MNI152 space to the corresponding coordinate in
+            subject 1 *voxel* space. Forward deformations has MNI affine and
+            MNI size.
+        s2_deform_backward: torch.Tensor
+            Backward deformation field of subject 2. The backward deformation
+            maps each voxel in subject 2 space to the corresponding coordinate
+            in MNI *voxel* space. Backward deformations has subject affine and
+            subject size.
+        s1_size: torch.Tensor | torch.Size
+            The spatial dimensions of subject 1 image space.
+        """
+        # images are (C,W,H,D) !!
+
+        super().__init__(device)
+        mni_image_shape = s1_deform.shape[-3:]
+
+        grid = s2_deform_backward.permute((1, 2, 3, 0))     # MNI voxel coordinates
+        grid = GridSample(grid, mni_image_shape)(s1_deform) # S1 voxel coordinates
+        grid = grid.permute((1, 2, 3, 0))
+        # The grid now contains the voxel coordinates in S1 corresponding to
+        # each voxel in S2, i.e., we have a S1[vox] to S2[vox] mapping.
+        self.image_sampler = GridSample(grid, s1_size)
+
+    def forward(self, image):
+        return self.image_sampler(image)
+
+
+class Sub2SubWarpSurface(BaseTransform):
+    def __init__(
+        self,
+        s1_deform_backward: torch.Tensor,
+        s2_deform: torch.Tensor,
+        s2_size: torch.Tensor | torch.Size,
+        device: None | torch.device = None,
+    ) -> None:
+        """Warp a surface from subject 1 (voxel) space to subject 2 (voxel)
+        space. The mapping is achieved by composing the supplied deformation
+        fields, i.e.,
+
+                      s2_deform            s1_deform_backward
+            S2[vox]     <---     MNI[vox]         <---          S1[vox]
+
+        such that, when applied to a surface in subject 1 space, they will push
+        the vertices into the space of subject 2. Note that this is the inverse
+        operation of `Sub2SubWarpImage`: Sub2SubWarpImage deforms the image
+        grid of S2 to S1 space and pulls the values. Sub2SubWarpSurface pushes
+        coordinates in S1 space to S2 space.
+
+        Parameters
+        ----------
+        s1_deform_backward :
+            Backward deformation field of subject 1. The backward deformation
+            maps each voxel in subject 1 space to the corresponding coordinate
+            in MNI *voxel* space. Backward deformations has subject affine and
+            subject size.
+        s2_deform :
+            Forward deformation field of subject 2. The forward deformation
+            maps each voxel in MNI152 space to the corresponding coordinate in
+            subject 2 *voxel* space. Forward deformations has MNI affine and
+            MNI size.
+        """
+        super().__init__(device)
+        mni_image_shape = s2_deform.shape[-3:]
+
+        grid = s1_deform_backward.permute((1, 2, 3, 0))     # MNI voxel coordinates
+        sampler = GridSample(grid, mni_image_shape)
+        # The field now contains the voxel coordinates in S2 space corresponding
+        # to each voxel in S1, i.e., we have a S2[vox] to S1[vox] mapping.
+        self.deformation_field = sampler(s2_deform) # S2 voxel coordinates
+
+    def forward(self, surface):
+        sampler = GridSample(surface, s2_size)
+        return sampler(self.deformation_field).squeeze().T
 
 
 class CheckCoordsInside(BaseTransform):
@@ -461,10 +725,24 @@ class GridSample(BaseTransform):
     def __init__(
         self,
         grid: torch.Tensor,
-        size: None | torch.Tensor = None,
+        size: None | torch.Tensor | torch.Size = None,
         assume_normalized: bool = False,
         # device: None | torch.device = None,
     ):
+        """_summary_
+
+        Parameters
+        ----------
+        grid : torch.Tensor
+            Grid of shape (V, 3) or (W, H, D, 3).
+        size : None | torch.Tensor, optional
+           Size of the image to be interpolated from (i.e., the size of the
+           image used when calling GridSample). The grid is normalized by this
+           shape.
+        assume_normalized : bool, optional
+            Assume that `grid` is already normalized in which case `size` is
+            not required (default = False).
+        """
         super().__init__()
 
         self.grid = grid
@@ -472,6 +750,7 @@ class GridSample(BaseTransform):
             assert (
                 size is not None
             ), "`size` must be provided when `assume_normalized = False`"
+            assert len(size) == 3
         self.size = size
         self.assume_normalized = assume_normalized
 
@@ -489,7 +768,21 @@ class GridSample(BaseTransform):
         elif self.grid_ndim == 4:
             self.norm_grid = self.norm_grid[None]  # 1,W,H,D,3
 
-    def forward(self, image, **kwargs):
+    def forward(self, image, padding_mode="border"):
+        """_summary_
+
+        Parameters
+        ----------
+        image : _type_
+            Image to interpolate from. The dimensions are (C, H, W, D) where
+            (H, W, D) should match the spatial size provided at initialization
+            (if any).
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
         # image : (C, W, H, D)
         # grid  : (V, 3) or (WW, HH, DD, 3)
         if self.grid is None:
@@ -514,7 +807,11 @@ class GridSample(BaseTransform):
         # NOTE `sample` has original xyz ordering! (N,C,W,H,D)
         if image.is_floating_point():
             sample = torch.nn.functional.grid_sample(
-                image, self.norm_grid, align_corners=True, mode="bilinear", **kwargs
+                image,
+                self.norm_grid,
+                align_corners=True,
+                mode="bilinear",
+                padding_mode=padding_mode,
             )
         else:
             # Cast to float and back since grid_sample doesn't support int (
@@ -524,7 +821,7 @@ class GridSample(BaseTransform):
                 self.norm_grid,
                 align_corners=True,
                 mode="nearest",
-                **kwargs,
+                padding_mode=padding_mode,
             ).to(image.dtype)
 
         if self.grid_ndim == 2:
@@ -592,6 +889,7 @@ class CenterFromString(BaseTransform):
         # important.)
         return res.floor() + 0.5 if self.align_corners else res
 
+
 class RandResolution(RandomizableTransform):
     """Simulate a"""
 
@@ -626,7 +924,9 @@ class RandResolution(RandomizableTransform):
                     self.device,
                 )
             else:
-                out_res, thickness = getattr(resolution_sampler, res_sampler)(self.device)()
+                out_res, thickness = getattr(resolution_sampler, res_sampler)(
+                    self.device
+                )()
 
             sigma = (
                 (0.85 + 0.3 * torch.rand(1, device=self.device))

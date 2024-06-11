@@ -28,34 +28,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_surface_hemispheres: None | list | str | tuple = "both",
         # initial_surface_type: str = "template",  # or prediction
         initial_surface_resolution: int = 0,
+        deform_load: bool = False,
+        deform_root_dir: None | Path | str = None,
+        deform_name: None | str = None,
+        deform_fields: None | dict = None,
+        deform_subjects: None | str| list| tuple = None,
     ):
         """
-
-        Will read the specified surface resolution (and hemisphere depending on
-        bounding box argument)
-
-        subject_dir/
-
-            info.pt
-            surface.{resolution}.{hemi}.pt
-            t1.nii
-            segmentation.nii
-            ...
-
-
-
-        from brainsynth.dataset import *
-        surface_hemi = "both"
-        dataset_id = "HCP"
-        surface_resolution = 4
-        surface_hemi = "both"
-        alternative_synth = ("norm", )
-        optional_images = [] #("T1",)
-        default_images = ("generation", "segmentation", "norm")
-        subjects = "train"
-        data_dir = Path("/mnt/scratch/personal/jesperdn/datasets/")
-        dataset = "HCP"
-        synthesizer=None
 
         ds = SynthesizedDataset(
             ds_dir="/mnt/projects/CORTECH/nobackup/training_data",
@@ -69,7 +48,6 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             initial_surface_resolution=0,
         )
         a,b,c=ds[0]
-
 
 
         Parameters
@@ -95,6 +73,28 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             assert synthesizer.device == torch.device("cpu")
         self.synthesizer = synthesizer
 
+        self._initialize_deformation(deform_load, deform_root_dir, deform_name, deform_fields, deform_subjects)
+
+    def _initialize_deformation(self, load_deform_fields, deform_root_dir, deform_name, deform_fields, deform_subjects):
+        self.load_deform_fields = load_deform_fields
+        if load_deform_fields:
+            if deform_fields is None:
+                self.deform_fields = dict(self=("forward", "backward"), other=("forward", "backward"))
+            else:
+                self.deform_fields = deform_fields
+            if isinstance(deform_subjects, (Path, str)):
+                self.deform_subjects = load_dataset_subjects(deform_subjects)
+            else:
+                self.deform_subjects = deform_subjects
+            self.deform_root_dir = Path(deform_root_dir)
+            self.deform_name = deform_name
+            self.get_deformation_filename = lambda subject,image: self.deform_root_dir / f"{self.deformation_name}.{subject}.{image}
+        else:
+            self.deform_fields = None
+            self.deform_subjects = None
+            self.deform_root = None
+            self.deform_name = None
+
     def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
         self.ds_dir = Path(ds_dir)
         self.name = name
@@ -104,23 +104,19 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         self.subjects = (
             load_dataset_subjects(subjects) if isinstance(subjects, (Path, str)) else subjects
         )
+        self.n_subjects = len(self.subjects)
 
         # Filename generators
         match self.ds_structure:
             case "flat":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / f"{self.name}.{subject}.{image}"
-
                 def get_surface_filename(subject, surface):
                     # return self.ds_dir / f"{self.name}.{subject}.{surface}"
                     return self.ds_dir / f"{self.name}.{subject}.surf_dir" / surface
-
             case "tree":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / self.name / subject / image
-
                 def get_surface_filename(subject, surface):
                     return self.ds_dir / self.name / subject / surface
 
@@ -195,9 +191,23 @@ class SynthesizedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.load_data(self.subjects[idx])
 
-    def load_data(self, subject_dir):
-        images = self.load_images(subject_dir)
-        surfaces, initial_vertices = self.load_surfaces(subject_dir)
+    def _select_random_subject(self, avoid):
+        s = self.subjects[torch.randint(0, self.n_subjects, (1,))]
+        if s == avoid:
+            return self._select_random_subject(avoid)
+        else:
+            return s
+
+    def load_data(self, subject):
+        images = self.load_images(subject)
+        surfaces, initial_vertices = self.load_surfaces(subject)
+
+        if self.load_deform_fields:
+            # load for this subject and another, randomly chosen, subject and
+            # add to images
+            other = self._select_random_subject(subject)
+            for d,s in zip((subject, other),("self", "other")):
+                images |= self.load_deformation_fields(d, self.deform_fields[s], s)
 
         if self.synthesizer is None:
             return images, surfaces, initial_vertices
@@ -205,12 +215,20 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             with torch.no_grad():
                 return self.synthesizer(images, surfaces, initial_vertices)
 
+    def load_deformation_fields(self, subject, fields, prefix=None):
+        images = {}
+        for field in fields:
+            img = getattr(IMAGE.images, field)
+            fi = self.get_image_filename(subject, img.filename)
+            k = f"{prefix}_deform_{field}" if prefix is not None else f"deform_{field}"
+            images[k] = self.load_image(fi, img.dtype)
+        return images
+
     def load_images(self, subject):
         images = {}
         for image in self.images:
-            img = getattr(IMAGE.images, image)
-
             # Not all subjects have all images
+            img = getattr(IMAGE.images, image)
             if (fi := self.get_image_filename(subject, img.filename)).exists():
                 images[image] = self.load_image(fi, img.dtype)
                 # If the image has an associated defacing mask, load it
