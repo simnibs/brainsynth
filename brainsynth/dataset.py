@@ -28,11 +28,6 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_surface_hemispheres: None | list | str | tuple = "both",
         # initial_surface_type: str = "template",  # or prediction
         initial_surface_resolution: int = 0,
-        deform_load: bool = False,
-        deform_root_dir: None | Path | str = None,
-        deform_name: None | str = None,
-        deform_fields: None | dict = None,
-        deform_subjects: None | str| list| tuple = None,
     ):
         """
 
@@ -49,6 +44,20 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         )
         a,b,c=ds[0]
 
+
+        xsub_kwargs : dict | None
+            Dictionary with keys `root_dir`, `name`, and `subjects`.
+
+            Optionally, key `fields` is used to specify which deformation
+            fields to load. The default is
+
+                dict(
+                    self=("forward", "backward"),
+                    other=("forward", "backward")
+                )
+
+            which loads forward and backward deformation fields for both
+            subject to be warped from (self) and to (other).
 
         Parameters
         ----------
@@ -72,28 +81,6 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         if synthesizer:
             assert synthesizer.device == torch.device("cpu")
         self.synthesizer = synthesizer
-
-        self._initialize_deformation(deform_load, deform_root_dir, deform_name, deform_fields, deform_subjects)
-
-    def _initialize_deformation(self, load_deform_fields, deform_root_dir, deform_name, deform_fields, deform_subjects):
-        self.load_deform_fields = load_deform_fields
-        if load_deform_fields:
-            if deform_fields is None:
-                self.deform_fields = dict(self=("forward", "backward"), other=("forward", "backward"))
-            else:
-                self.deform_fields = deform_fields
-            if isinstance(deform_subjects, (Path, str)):
-                self.deform_subjects = load_dataset_subjects(deform_subjects)
-            else:
-                self.deform_subjects = deform_subjects
-            self.deform_root_dir = Path(deform_root_dir)
-            self.deform_name = deform_name
-            self.get_deformation_filename = lambda subject,image: self.deform_root_dir / f"{self.deformation_name}.{subject}.{image}
-        else:
-            self.deform_fields = None
-            self.deform_subjects = None
-            self.deform_root = None
-            self.deform_name = None
 
     def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
         self.ds_dir = Path(ds_dir)
@@ -191,38 +178,15 @@ class SynthesizedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.load_data(self.subjects[idx])
 
-    def _select_random_subject(self, avoid):
-        s = self.subjects[torch.randint(0, self.n_subjects, (1,))]
-        if s == avoid:
-            return self._select_random_subject(avoid)
-        else:
-            return s
-
     def load_data(self, subject):
         images = self.load_images(subject)
         surfaces, initial_vertices = self.load_surfaces(subject)
-
-        if self.load_deform_fields:
-            # load for this subject and another, randomly chosen, subject and
-            # add to images
-            other = self._select_random_subject(subject)
-            for d,s in zip((subject, other),("self", "other")):
-                images |= self.load_deformation_fields(d, self.deform_fields[s], s)
 
         if self.synthesizer is None:
             return images, surfaces, initial_vertices
         else:
             with torch.no_grad():
                 return self.synthesizer(images, surfaces, initial_vertices)
-
-    def load_deformation_fields(self, subject, fields, prefix=None):
-        images = {}
-        for field in fields:
-            img = getattr(IMAGE.images, field)
-            fi = self.get_image_filename(subject, img.filename)
-            k = f"{prefix}_deform_{field}" if prefix is not None else f"deform_{field}"
-            images[k] = self.load_image(fi, img.dtype)
-        return images
 
     def load_images(self, subject):
         images = {}
@@ -240,9 +204,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
     def load_image(self, filename, dtype):
         # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
-        return atleast_4d(
-            torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype).squeeze()
-        ).contiguous()
+        data = torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype)
+        if data.ndim < 3:
+            raise ValueError(f"Image {filename} has less than three dimensions (shape is {data.shape})")
+        elif data.ndim == 3: # (x,y,z) -> (c,x,y,z)
+            data = atleast_4d(data)
+        elif data.ndim == 4: # (x,y,z,c) -> (c,x,y,z)
+            data = data.permute((3,0,1,2)).contiguous()
+        elif data.ndim > 4:
+            raise ValueError(f"Image {filename} has more than four dimensions (shape is {data.shape})")
+        return data
 
     def load_surfaces(self, subject):
         if self.target_surface_resolution is None:

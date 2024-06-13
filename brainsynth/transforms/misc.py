@@ -34,3 +34,10 @@ class ServeValue(BaseTransform):
     def forward(self):
         return self.x
 
+class ApplyFunction(BaseTransform):
+    def __init__(self, func, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.func = func
+
+    def forward(self, x):
+        return self.func(x)

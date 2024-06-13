@@ -62,7 +62,15 @@ class DatasetConfig:
         }
         datasets = datasets or known_datasets
         images = images or ("generation_labels", )
-        use_images = {ds: [i for i in images if i in valid_images[ds]] for ds in datasets}
+        use_images = {}
+        for ds in datasets:
+            use_images[ds] = []
+            for i in images:
+                if i in valid_images[ds]:
+                    use_images[ds].append(i)
+                else:
+                    raise ValueError(f"Invalid image `{i}` for dataset {ds}.")
+        # use_images = {ds: [i for i in images if i in valid_images[ds]] for ds in datasets}
 
         root_dir = Path(root_dir)
         subject_dir = Path(subject_dir)

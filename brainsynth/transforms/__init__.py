@@ -12,22 +12,29 @@ from .contrast import (
     SynthesizeIntensityImage,
 )
 from .spatial import (
+    BoundingBoxCorner,
+    BoundingBoxSize,
     CenterFromString,
     CheckCoordsInside,
     Grid,
     GridCentering,
     GridNormalization,
     GridSample,
+    PadTransform,
     RandLinearTransform,
     RandNonlinearTransform,
     RandResolution,
+    RestrictBoundingBox,
     SpatialCrop,
+    SpatialCropParameters,
     SpatialSize,
     SurfaceBoundingBox,
     TranslationTransform,
+    XSubWarpImage,
+    XSubWarpSurface,
 )
 from .label import MaskFromLabelImage, OneHotEncoding
-from .misc import ExtractDictKeys, Intersection, ServeValue, Uniform
+from .misc import ApplyFunction, ExtractDictKeys, Intersection, ServeValue, Uniform
 
 from brainsynth.constants import mapped_input_keys as mikeys
 

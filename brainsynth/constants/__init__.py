@@ -55,6 +55,8 @@ Images = namedtuple(
         "mni_reg_x",
         "mni_reg_y",
         "mni_reg_z",
+        "mni152_nonlin_forward",
+        "mni152_nonlin_backward",
         "lp_dist_map",
         "lw_dist_map",
         "rp_dist_map",
@@ -73,8 +75,6 @@ MetaData = namedtuple(
     "ImageData",
     ("filename", "dtype", "defacingmask"),
 )
-
-MNIDeformFields = namedtuple("DeformationFields", ("forward", "backward"))
 
 class ImageSettings:
     def __init__(self):
@@ -108,10 +108,12 @@ class ImageSettings:
             lp_dist_map=MetaData("lp_dist_map.nii", torch.float, None),
             lw_dist_map=MetaData("lw_dist_map.nii", torch.float, None),
             rp_dist_map=MetaData("rp_dist_map.nii", torch.float, None),
-            rw_dist_map=MetaData("rp_dist_map.nii", torch.float, None),
+            rw_dist_map=MetaData("rw_dist_map.nii", torch.float, None),
             mni_reg_x=MetaData("mni_reg.x.nii", torch.float, None),
             mni_reg_y=MetaData("mni_reg.y.nii", torch.float, None),
             mni_reg_z=MetaData("mni_reg.z.nii", torch.float, None),
+            mni152_nonlin_forward=MetaData("mni152_nonlin_forward.nii", torch.float, None),
+            mni152_nonlin_backward=MetaData("mni152_nonlin_backward.nii", torch.float, None),
             t1w=MetaData("T1w.nii", torch.float, "t1w_mask"),
             t1w_mask=MetaData("T1w.defacingmask.nii", torch.bool, None),
             t2w=MetaData("T2w.nii", torch.float, "t2w_mask"),
@@ -124,6 +126,8 @@ class ImageSettings:
             "brainseg",
             "brainseg_with_extracerebral",
             "generation_labels",
+            "mni152_nonlin_backward",
+            "mni152_nonlin_forward",
             "mni_reg_x",
             "mni_reg_y",
             "mni_reg_z",
@@ -133,11 +137,6 @@ class ImageSettings:
             "rw_dist_map",
             "t1w",
         ]
-
-        self.mni_deform = MNIDeformFields(
-            forward=MetaData("deform_forward.nii", torch.float, None),
-            backward=MetaData("deform_backward.nii", torch.float, None),
-        )
 
 # ---------------------------
 # SURFACES
