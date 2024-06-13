@@ -18,7 +18,8 @@ class Synthesizer(torch.nn.Module):
         out = out if out is not None else {}
         for k, pipeline in pipelines.items():
             res = pipeline(mapped_inputs) if isinstance(pipeline, Pipeline) else pipeline()
-            # If
+            # If a pipeline was skipped (e.g., because the input did not exist,
+            # then `res` is None)
             if res is not None:
                 out[k] = res
         return out
@@ -46,7 +47,7 @@ class Synthesizer(torch.nn.Module):
         # Build the pipelines
         state_pipeline, output_pipeline = self.builder.build(self.config)
 
-        # Set the state
+        # Set the internal state
         mapped_inputs["state"] = self.execute(
             state_pipeline, mapped_inputs, mapped_inputs[mikeys.state]
         )

@@ -180,7 +180,7 @@ class SpatialCrop(BaseTransform):
         self.size = size # to validate input
         if slices is None:
             assert start is not None and stop is not None, "`start` and `stop` are required if `slices` is None."
-            self.slices = tuple(slice(i,j) for i,j in zip(start, stop))
+            self.slices = tuple(slice(int(i), int(j)) for i,j in zip(start, stop))
         else:
             self.slices = slices
 
@@ -350,7 +350,7 @@ class TranslationTransform(BaseTransform):
     ) -> None:
         super().__init__(device)
         self.invert = invert
-        self.translation = translation.to(self.device)
+        self.translation = torch.as_tensor(translation).to(self.device)
 
     def forward(self, x: torch.Tensor):
         if self.invert:

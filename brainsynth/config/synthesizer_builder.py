@@ -254,7 +254,7 @@ class XSubSynthBuilder(SynthBuilder):
     def build(self, config: SynthesizerConfig):
         device = config.device
 
-        assert config.out_center_str == "image", "Currently, only `image` center specification is compatible with xsub"
+        assert config.out_center_str == "image", "Currently, only `image` center specification is compatible with xsub builder"
 
         # ---------------------------------------------------------------------
         # The spatial augmentation pipeline
@@ -293,29 +293,7 @@ class XSubSynthBuilder(SynthBuilder):
                 ),
                 unpack_inputs=False,
             ),
-            # bbox_size=Pipeline(
-            #     SelectState("padded_surface_bbox"),
-            #     BoundingBoxSize(),
-            # ),
-            # lower_left=Pipeline(
-            #     SelectState("padded_surface_bbox"),
-            #     BoundingBoxCorner("lower left"),
-            # ),
-            # upper_right=Pipeline(
-            #     SelectState("padded_surface_bbox"),
-            #     BoundingBoxCorner("upper right"),
-            #     # ApplyFunction(torch.ceil),
-            #     # ApplyFunction(torch._cast_Int),
-            # ),
             # where to center the (output) FOV in the input image space
-            other_out_center=Pipeline(
-                ServeValue(config.out_center_str),
-                PipelineModule(
-                    CenterFromString,
-                    SelectState("other_size"),
-                    align_corners = config.align_corners,
-                ),
-            ),
             self_out_center=Pipeline(
                 ServeValue(config.out_center_str),
                 PipelineModule(
@@ -324,6 +302,15 @@ class XSubSynthBuilder(SynthBuilder):
                     align_corners = config.align_corners,
                 ),
             ),
+            other_out_center=Pipeline(
+                ServeValue(config.out_center_str),
+                PipelineModule(
+                    CenterFromString,
+                    SelectState("other_size"),
+                    align_corners = config.align_corners,
+                ),
+            ),
+            # cropping parameters in `other` space
             crop_params=Pipeline(
                 SelectState("other_size"),
                 PipelineModule(
@@ -331,35 +318,26 @@ class XSubSynthBuilder(SynthBuilder):
                     config.out_size,
                     SelectState("other_out_center"),
                 ),
-            )
+            ),
+            # we don't need the entire space of `self` in order to transform
+            # the surface so crop to a bounding box around the surface(s)
+            self_mni_backward_cropped = Pipeline(
+                SelectImage("mni152_nonlin_backward"),
+                PipelineModule(
+                    SpatialCrop,
+                    size=SelectState("self_size"),
+                    start=SelectState("padded_surface_bbox", 0), # recursive selection
+                    stop=SelectState("padded_surface_bbox", 1),
+                ),
+            ),
+            # depending on the desired output FOV, we don't need to fill the
+            # entire space of `other` so crop it
             other_mni_backward_cropped = Pipeline(
                 SelectImage("other_mni152_nonlin_backward"),
                 PipelineModule(
                     SpatialCrop,
                     size=SelectState("other_size"),
                     slices=SelectState("crop_params", "slices"),
-                ),
-            ),
-            # the spatial dimensions of the image to warp *to*
-            other_cropped_size=Pipeline(
-                SelectState("other_mni_backward_cropped"),
-                SpatialSize(),
-            ),
-            other_cropped_out_center=Pipeline(
-                ServeValue(config.out_center_str),
-                PipelineModule(
-                    CenterFromString,
-                    SelectState("other_cropped_size"),
-                    align_corners = config.align_corners,
-                ),
-            ),
-            self_mni_backward_cropped = Pipeline(
-                SelectImage("mni152_nonlin_backward"),
-                PipelineModule(
-                    SpatialCrop,
-                    size=SelectState("self_size"),
-                    start=SelectState("padded_surface_bbox", 0), #SelectState("lower_left"),
-                    stop=SelectState("padded_surface_bbox", 1), #SelectState("upper_right"),
                 ),
             ),
         )
@@ -371,17 +349,19 @@ class XSubSynthBuilder(SynthBuilder):
                 SelectState("other_mni_backward_cropped"),
                 SelectState("self_size"), # size of the input we sample *from*
             ),
+            # We used a cropped image in `other` space so pad to achieve
+            # desired output size
             PipelineModule(
                 PadTransform,
                 SelectState("crop_params", "pad"),
-            )
+            ),
         )
 
         surface_deformation = SubPipeline(
-            # compensate for offset caused by cropping
+            # compensate for offset caused by cropping in self space
             PipelineModule(
                 TranslationTransform,
-                SelectState("lower_left"),
+                SelectState("padded_surface_bbox", 0), # lower left
                 invert = True,
                 device=device,
             ),
@@ -390,6 +370,8 @@ class XSubSynthBuilder(SynthBuilder):
                 SelectState("self_mni_backward_cropped"),
                 SelectImage("other_mni152_nonlin_forward"),
             ),
+            # compensate for offset caused by cropping in other space (because
+            # we cropped to out_size)
             PipelineModule(
                 TranslationTransform,
                 SelectState("crop_params", "offset"),
@@ -434,9 +416,61 @@ class XSubSynthBuilder(SynthBuilder):
                 OneHotEncoding(config.segmentation_num_labels),
                 skip_on_InputSelectorError=True,
             ),
-
-
-
+            # Synthesize image or select an actual image
+            image=Pipeline(
+                RandomChoice(
+                    [
+                        Pipeline(
+                            SelectImage("generation_labels"),
+                            SynthesizeIntensityImage(
+                                mu_offset=25.0,
+                                mu_scale=200.0,
+                                sigma_offset=0.0,
+                                sigma_scale=10.0,
+                                photo_mode=config.photo_mode,
+                                min_cortical_contrast=25.0,
+                                device=device,
+                            ),
+                            # RandGaussianNoise(),
+                            RandGammaTransform(mean=0.0, std=1.0, prob=0.75),
+                        ),
+                        Pipeline(
+                            # select one of the available contrasts...
+                            PipelineModule(
+                                SelectImage,
+                                PipelineModule(
+                                    RandomChoice,
+                                    SelectState("available_images"),
+                                    # equal probability of selecting each image
+                                ),
+                            ),
+                        ),
+                    ],
+                    prob=(1.0, 0.0),
+                ),
+                image_deformation,
+                RandBiasfield(
+                    config.out_size,
+                    scale_min=0.02,
+                    scale_max=0.04,
+                    std_min=0.1,
+                    std_max=0.6,
+                    photo_mode=config.photo_mode,
+                    prob=0.9,
+                    device=device,
+                ),
+                PipelineModule(
+                    RandResolution,
+                    config.out_size,
+                    config.in_res,
+                    photo_mode=config.photo_mode,
+                    photo_spacing=SelectState("photo_spacing"),
+                    photo_thickness=config.photo_thickness,
+                    prob=0.0,
+                    device=device,
+                ),
+                intensity_normalization,
+            ),
             surface=Pipeline(
                 SelectSurface(),
                 surface_deformation,
