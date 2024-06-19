@@ -21,7 +21,7 @@ if __name__ == "__main__":
         "XSubSynthBuilder",
         device="cuda:0",
         alternative_images=("t1w", "t2w"),
-        out_center_str="image",
+        out_center_str="brain",
         segmentation_labels="brainseg",
     )
     self = Synthesizer(synthconf)
@@ -62,9 +62,9 @@ if __name__ == "__main__":
         **dsconf.dataset_kwargs["ABIDE"]
     )
 
-
+    i = 4
     images, surfaces, initial_vertices = ds1[0]
-    images2, _, _ = ds2[0]
+    images2, _, _ = ds2[i]
     for k,v in images2.items():
         images[f"other_{k}"] = v
 
@@ -73,15 +73,15 @@ if __name__ == "__main__":
     # dl = setup_dataloader(dsconf.dataset_kwargs) # **dataloader_kwargs
 
     # images = {k:v[..., :-1] for k,v in images.items()}
-    a, b, c = self(images, surfaces, initial_vertices)
+    # a, b, c = self(images, surfaces, initial_vertices)
 
     affine = np.eye(4)
 
-    nib.Nifti1Image(a["t1w"][0].cpu().numpy(), affine).to_filename(out / "T1w.nii")
+    nib.Nifti1Image(a["t1w"][0].cpu().numpy(), affine).to_filename(out / f"T1w_{i:02d}.nii")
     nib.Nifti1Image(
         a["brainseg"].argmax(0).to(torch.int32).cpu().numpy(), affine
-    ).to_filename(out / "brainseg.nii")
-    #nib.Nifti1Image(a["image"][0].cpu().numpy(), affine).to_filename(out / "image.nii")
+    ).to_filename(out / f"brainseg_{i:02d}.nii")
+    nib.Nifti1Image(a["image"][0].cpu().numpy(), affine).to_filename(out / f"image_{i:02d}.nii")
 
     metadata = dict(
         head=[2, 0, 20],
@@ -96,15 +96,21 @@ if __name__ == "__main__":
     )
     # b["lh"]["white"][:, 2] -= 0.5
     nib.freesurfer.write_geometry(
-        out / "lh.white",
+        out / f"lh.white_{i:02d}",
         b["lh"]["white"].cpu().numpy(),
         top[5].faces.numpy(),
         volume_info=metadata,
     )
     nib.freesurfer.write_geometry(
-        out / "lh.pial",
+        out / f"lh.pial_{i:02d}",
         b["lh"]["pial"].cpu().numpy(),
         top[5].faces.numpy(),
+        volume_info=metadata,
+    )
+    nib.freesurfer.write_geometry(
+        out / f"lh.init_{i:02d}",
+        c["lh"].cpu().numpy(),
+        top[0].faces.numpy(),
         volume_info=metadata,
     )
     # nib.Nifti1Image(

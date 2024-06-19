@@ -31,7 +31,8 @@ from .spatial import (
     SurfaceBoundingBox,
     TranslationTransform,
     XSubWarpImage,
-    XSubWarpSurface,
+    XSubWarpSurface_v1,
+    XSubWarpSurface_v2,
 )
 from .label import MaskFromLabelImage, OneHotEncoding
 from .misc import ApplyFunction, ExtractDictKeys, Intersection, ServeValue, Uniform

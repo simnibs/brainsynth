@@ -7,7 +7,6 @@ from brainsynth.transforms.base import BaseTransform, RandomizableTransform
 from brainsynth.transforms import resolution_sampler
 from brainsynth.transforms.filters import GaussianSmooth
 
-
 import functools
 
 def function_recursion_dict(func):
@@ -35,82 +34,6 @@ def CWHD_to_WHDC(x, as_contiguous: bool = False):
     out = out.contiguous() if as_contiguous else out
     return out
 
-# class SpatialCrop(BaseTransform):
-#     def __init__(
-#         self,
-#         in_size: torch.Tensor,
-#         out_size: torch.Tensor,
-#         out_center: torch.Tensor,
-#     ) -> None:
-#         super().__init__()
-#         self.in_size = in_size
-#         self.out_size = out_size
-#         self.out_center = out_center
-
-#         halfsize = 0.5 * (out_size - 1)
-#         start = torch.ceil(out_center - halfsize).int()
-#         stop = torch.floor(out_center + halfsize).int()
-#         stop += out_size - (stop - start)
-#         slices = tuple((a.item(), b.item()) for a, b in zip(start, stop))
-
-#         # sample these slices in the original image
-#         self.slice_in = tuple(
-#             slice(max(slc[0], 0), min(slc[1], ins.item()))
-#             for slc, ins in zip(slices, in_size)
-#         )
-#         # place them in these positions in the new image
-#         self.slice_out = tuple(
-#             slice(0 - min(0, slc[0]), outs.item() - max(0, slc[1] - ins.item()))
-#             for slc, ins, outs in zip(slices, in_size, out_size)
-#         )
-
-#         self.padding = [
-#             (0 - min(0, slc[0]), max(0, slc[1] - ins.item()))
-#             for slc, ins, outs in zip(slices, in_size, out_size)
-#         ]
-
-#     def forward(self, image: torch.Tensor) -> torch.Tensor:
-#         out_size = torch.zeros(image.ndim, dtype=self.out_size.dtype)
-#         out_size[-3:] = self.out_size
-#         for i, s in enumerate(image.shape[:-3]):
-#             out_size[i] = s
-
-#         out = torch.zeros(tuple(out_size), dtype=image.dtype)
-#         out[..., *self.slice_out] = image[..., *self.slice_in]
-#         return out
-
-#         return image[..., *self.slice_in]
-
-
-def _compute_slice_start_stop(center, size):
-    halfsize = 0.5 * (size - 1.0)
-    start = torch.ceil(center - halfsize).int()
-    stop = torch.floor(center + halfsize).int()
-    stop += size - (stop - start)
-    return tuple((a.item(), b.item()) for a, b in zip(start, stop))
-
-
-class SpatialCropFromWindow(BaseTransform):
-    def __init__(
-        self,
-        start: torch.Tensor,
-        stop: torch.Tensor,
-        size: torch.Tensor,
-        device: None | torch.device = None,
-    ) -> None:
-        super().__init__(device)
-        self.size = size
-        self.slices = [
-            slice(max(0, s0.item()), min(s.item(), s1.item()))
-            for s0, s1, s in zip(start.int(), stop.int(), size.int())
-        ]
-
-    def forward(self, image):
-        assert image.size()[-3:] == torch.Size(
-            self.size
-        ), f"Invalid image size {image.size()[-3:]} expected {torch.Size(self.in_size)}"
-        return image[..., *self.slices]
-
 
 class SpatialCropParameters(BaseTransform):
     def __init__(
@@ -120,22 +43,20 @@ class SpatialCropParameters(BaseTransform):
         device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
-
         # uncorrected slices
-        self.raw_slices = _compute_slice_start_stop(out_center, out_size)
+        self.raw_slices = self._compute_slice_start_stop(out_center, out_size)
+
         self.offset = tuple(s[0] for s in self.raw_slices)
 
-
-    # @staticmethod
-    # def _pre_pad(start):
-    #     return -min(0, start)
-
-    # @staticmethod
-    # def _post_pad(stop, size):
-    #     return max(0, stop - size)
+    @staticmethod
+    def _compute_slice_start_stop(center, size):
+        halfsize = 0.5 * (size - 1.0)
+        start = torch.ceil(center - halfsize).int()
+        stop = torch.floor(center + halfsize).int()
+        stop += size - (stop - start)
+        return tuple((a.item(), b.item()) for a, b in zip(start, stop))
 
     def forward(self, in_size: torch.Tensor):
-
         # restrict slices to image size (i.e., these slices are sampled in the
         # original image)
         self.slices = tuple(
@@ -154,21 +75,13 @@ class SpatialCropParameters(BaseTransform):
         # torch.nn.functional.pad(x, (0,1,0,0,0,0)) -> x[:,  :,  :, -1]
 
         # therefore
-        # self.pad = (
-        #     self._pre_pad(_slices[2][0]),  # inferior
-        #     self._post_pad(_slices[2][1], in_size[2].item()),  # superior
-        #     self._pre_pad(_slices[1][0]),  # posterior
-        #     self._post_pad(_slices[1][1], in_size[1].item()),  # anterior
-        #     self._pre_pad(_slices[0][0]),  # left
-        #     self._post_pad(_slices[0][1], in_size[0].item()),  # right
-        # )
 
         self.pad = (
-            self.slices[2].start - self.raw_slices[2][0],   # inferior
+            self.slices[2].start  - self.raw_slices[2][0],  # inferior
             self.raw_slices[2][1] - self.slices[2].stop,    # superior
-            self.slices[1].start - self.raw_slices[1][0],   # posterior
+            self.slices[1].start  - self.raw_slices[1][0],  # posterior
             self.raw_slices[1][1] - self.slices[1].stop,    # anterior
-            self.slices[0].start - self.raw_slices[0][0],   # left
+            self.slices[0].start  - self.raw_slices[0][0],  # left
             self.raw_slices[0][1] - self.slices[0].stop,    # right
         )
 
@@ -189,55 +102,6 @@ class SpatialCrop(BaseTransform):
             self.size
         ), f"Invalid image size {image.size()[-3:]} expected {torch.Size(self.size)}"
         return image[..., *self.slices]
-
-
-# class SpatialCrop(BaseTransform):
-#     def __init__(
-#         self,
-#         in_size: torch.Tensor,
-#         out_size: torch.Tensor,
-#         out_center: torch.Tensor,
-#         device: None | torch.device = None,
-#     ) -> None:
-#         """Calculate a spatial cropping centered on `out_center` in an image
-#         of size `in_size` such that the result has a size of `out_size`. The
-#         result may be smaller than `out_size` if the cropping exceeds the
-#         dimensions of `in_size`. E.g.,
-
-#             in_size = (176, 256, 256)
-#             out_size = (192, 192, 192)
-#             out_center = (87.5000, 127.5000, 127.5000)
-
-#         will crop an image of `in_size` to (176, 192, 192) using the following
-#         slices ((0, 176), (32, 224), (32, 224)). In order to ensure an output
-#         of size `out_size`, PadTransform can be applied afterwards.
-#         """
-#         super().__init__(device)
-
-#         self.in_size = in_size
-#         self.out_size = out_size
-#         self.out_center = out_center
-
-#         slices = _compute_slice_start_stop(out_center, out_size)
-
-#         # sample these slices in the original image (restrict slices if
-#         # necessary)
-#         self.slices = tuple(
-#             slice(max(slc[0], 0), min(slc[1], ins.item()))
-#             for slc, ins in zip(slices, in_size)
-#         )
-#         # place them in these positions in the new image
-#         # self.slice_out = tuple(
-#         #     slice(0 - min(0, slc[0]), outs.item() - max(0, slc[1] - ins.item()))
-#         #     for slc, ins, outs in zip(slices, in_size, out_size)
-#         # )
-
-#     def forward(self, image: torch.Tensor) -> torch.Tensor:
-#         assert image.size()[-3:] == torch.Size(
-#             self.in_size
-#         ), f"Invalid image size {image.size()[-3:]} expected {torch.Size(self.in_size)}"
-#         return image[..., *self.slices]
-
 
 
 class PadTransform(BaseTransform):
@@ -278,67 +142,6 @@ class PadTransform(BaseTransform):
     def forward(self, image):
         # assert image.size()[-3:] == self.size, f"Padding was calculated for an image of size {self.size}; got image of size {image.size()[-3:]}"
         return torch.nn.functional.pad(image, self.pad, **self.pad_kwargs)
-
-
-# class PadTransform(BaseTransform):
-#     def __init__(
-#         self,
-#         in_size: torch.Tensor,
-#         out_size: torch.Tensor,
-#         out_center: torch.Tensor,
-#         pad_kwargs: dict | None = None,
-#         device: None | torch.device = None,
-#     ) -> None:
-#         """Construct the amount of padding needed to achieve an image of
-#         `out_size` centered on `out_center` in an image of `in_size`. E.g.,
-
-#             in_size = (176, 256, 256)
-#             out_size = (192, 192, 192)
-#             out_center = (87.5000, 127.5000, 127.5000)
-
-#         will result in the following amount of padding
-
-#             (0, 0, 0, 0, 8, 8)
-
-#         To ensure that `out_size` is achieved, apply PadTransform afterwards.
-#         """
-#         super().__init__(device)
-#         self.pad_kwargs = pad_kwargs or {}
-#         self.size = torch.Size(in_size)
-
-#         slices = _compute_slice_start_stop(out_center, out_size)
-
-#         # these commands ...                           adds these dims
-#         # (assuming x is [C, X, Y, Z] then)
-
-#         # torch.nn.functional.pad(x, (0,0,0,0,1,0)) -> x[:,  0,  :,  :]
-#         # torch.nn.functional.pad(x, (0,0,0,0,0,1)) -> x[:, -1,  :,  :]
-#         # torch.nn.functional.pad(x, (0,0,1,0,0,0)) -> x[:,  :,  0,  :]
-#         # torch.nn.functional.pad(x, (0,0,0,1,0,0)) -> x[:,  :, -1,  :]
-#         # torch.nn.functional.pad(x, (1,0,0,0,0,0)) -> x[:,  :,  :,  0]
-#         # torch.nn.functional.pad(x, (0,1,0,0,0,0)) -> x[:,  :,  :, -1]
-
-#         # therefore
-#         self.pad = (
-#             self._pre_pad(slices[2][0]),  # inferior
-#             self._post_pad(slices[2][1], in_size[2].item()),  # superior
-#             self._pre_pad(slices[1][0]),  # posterior
-#             self._post_pad(slices[1][1], in_size[1].item()),  # anterior
-#             self._pre_pad(slices[0][0]),  # left
-#             self._post_pad(slices[0][1], in_size[0].item()),  # right
-#         )
-
-#     @staticmethod
-#     def _pre_pad(start):
-#         return -min(0, start)
-
-#     @staticmethod
-#     def _post_pad(stop, size):
-#         return max(0, stop - size)
-
-#     def forward(self, image):
-#         assert image.size()[-3:] == self.size, f"Padding was calculated for an image of size {self.size}; got image of size {image.size()[-3:]}"
-#         return torch.nn.functional.pad(image, self.pad, **self.pad_kwargs)
 
 
 class TranslationTransform(BaseTransform):
@@ -570,139 +373,11 @@ class RandNonlinearTransform(RandomizableTransform):
         else:
             return grid
 
-
-# def apply_trans(trans, t):
-#     return t @ trans[:3, :3].T + trans[:3, 3]
-
-# d = Path("/mnt/scratch/personal/jesperdn/training_data_deformations")
-# s1 = "sub-0003"
-# s2 = "sub-0004"
-
-# s1_deform = torch.tensor(nib.load(d / f"ABIDE.{s1}.deform.nii").get_fdata()).float()
-# s1_deform = s1_deform.permute((3, 0, 1, 2))
-
-# s2_deform = torch.tensor(nib.load(d / f"ABIDE.{s2}.deform.nii").get_fdata()).float()
-# s2_deform = s2_deform.permute((3, 0, 1, 2))
-
-
-# A1 = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine.txt")).float()
-# A2 = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine.txt")).float()
-# A1B = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine_backward.txt")).float()
-# A2B = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine_backward.txt")).float()
-
-# S1A = torch.tensor(
-#     nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.T1w.nii").affine
-# ).float()
-# S1AB = torch.linalg.inv(S1A)
-# S2A = torch.tensor(
-#     nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii").affine
-# ).float()
-# S2AB = torch.linalg.inv(S2A)
-
-# s1_deform_backward = torch.tensor(
-#     nib.load(d / f"ABIDE.{s1}.deform_backward.nii").get_fdata()
-# ).float()
-# s1_deform_backward = s1_deform_backward.permute((3, 0, 1, 2))
-
-# s2_deform_backward = torch.tensor(
-#     nib.load(d / f"ABIDE.{s2}.deform_backward.nii").get_fdata()
-# ).float()
-# s2_deform_backward = s2_deform_backward.permute((3, 0, 1, 2))
-
-# s1_t1 = torch.tensor(
-#     nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.T1w.nii")
-#     .get_fdata()
-#     .squeeze()[None]
-# ).float()
-# s1_size = s1_t1.shape[-3:]
-
-# s2_t1 = torch.tensor(
-#     nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii")
-#     .get_fdata()
-#     .squeeze()[None]
-# ).float()
-# s2_size = s2_t1.shape[-3:]
-
-# self = XSubWarpImage(s1_deform, s2_deform_backward, s1_size)
-# out1 = self(s1_t1)
-# affine = nib.load(d / f"ABIDE.{s2}.deform_backward.nii").affine
-# nib.Nifti1Image(out1[0].numpy(), affine).to_filename(d / "out_s1-to-s2.nii")
-
-# self = XSubWarpImage(s2_deform, s1_deform_backward, s2_size)
-# out2 = self(s2_t1)
-# affine = nib.load(d / f"ABIDE.{s1}.deform_backward.nii").affine
-# nib.Nifti1Image(out2[0].numpy(), affine).to_filename(d / "out_s2-to-s1.nii")
-
-
-# size = [i for i in s2_size]
-
-# metadata = dict(
-#     head=[2, 0, 20],
-#     valid="1  # volume info valid",
-#     filename="vol.nii",
-#     volume=size,
-#     voxelsize=[1, 1, 1],
-#     xras=[-1, 0, 0],
-#     yras=[0, 0, -1],
-#     zras=[0, 1, 0],
-#     cras=[0, 0, 0],
-# )
-
-# s1_white = torch.load(
-#     f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/lh.white.5.target.pt"
-# )
-# s1_pial = torch.load(
-#     f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/lh.pial.5.target.pt"
-# )
-
-# self = XSubWarpSurface(s1_deform_backward, s2_deform, s1_size)
-
-# out1 = self(s1_white)
-# nib.freesurfer.write_geometry(
-#     d / "surf_lh.white_s1-to-s2",
-#     (out1.float() @ S2A[:3, :3].T + S2A[:3, 3]).numpy(),
-#     top[5].faces.numpy(),
-#     volume_info=metadata,
-# )
-
-# out1 = self(s1_pial)
-# nib.freesurfer.write_geometry(
-#     d / "surf_lh.pial_s1-to-s2",
-#     (out1.float() @ S2A[:3, :3].T + S2A[:3, 3]).numpy(),
-#     top[5].faces.numpy(),
-#     volume_info=metadata,
-# )
-
-
-# s1_white = torch.load(
-#     f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/rh.white.5.target.pt"
-# )
-# s1_pial = torch.load(
-#     f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s1}.surf_dir/rh.pial.5.target.pt"
-# )
-
-# out1 = self(s1_white)
-# nib.freesurfer.write_geometry(
-#     d / f"surf_rh.white_s1-to-s2",
-#     (out1.float() @ S2A[:3, :3].T + S2A[:3, 3]).numpy(),
-#     top[5].faces.numpy(),
-#     volume_info=metadata,
-# )
-
-# out1 = self(s1_pial)
-# nib.freesurfer.write_geometry(
-#     d / f"surf_rh.pial_s1-to-s2",
-#     (out1.float() @ S2A[:3, :3].T + S2A[:3, 3]).numpy(),
-#     top[5].faces.numpy(),
-#     volume_info=metadata,
-# )
-
-
 """
-# AFFINE TRANSFORM
+# NOTE - in case we want to implement the affine sub to sub transform as well
 
-A1 = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine.txt")).float()
-A2 = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine.txt")).float()
+A1 = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine_forward.txt")).float()
+A2 = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine_forward.txt")).float()
 A1B = torch.tensor(np.loadtxt(d / f"ABIDE.{s1}.affine_backward.txt")).float()
 A2B = torch.tensor(np.loadtxt(d / f"ABIDE.{s2}.affine_backward.txt")).float()
 
@@ -711,16 +386,26 @@ S1AB = torch.linalg.inv(S1A)
 S2A = torch.tensor(nib.load(f"/mnt/projects/CORTECH/nobackup/training_data/ABIDE.{s2}.T1w.nii").affine).float()
 S2AB = torch.linalg.inv(S2A)
 
+# SUB1 > SUB2
 
 grid = torch.stack(torch.meshgrid([torch.arange(i) for i in s2_size], indexing="ij")).float()
 grid = grid.permute((1,2,3,0))
 Ax = S1AB @ A1 @ A2B @ S2A
+
+# applying `Ax` to `grid` from right to left we go:
+#
+#   sub2-vox > sub2-ras > mni-ras > sub1-ras > sub1-vox
+#
+# that is, we deform grid from sub2 to sub1 space - then we sample thereby
+# pulling values from S1 to S2
+
 grid = grid @ Ax[:3,:3].T + Ax[:3,3]
 
 sampler = GridSample(grid, s1_size)
 out11 = sampler(s1_t1)
 nib.Nifti1Image(out11[0].numpy(), S2A).to_filename(d / f"affine_{s1}-to-{s2}.nii")
 
+# SUB2 > SUB1
 
 grid = torch.stack(torch.meshgrid([torch.arange(i) for i in s1_size], indexing="ij")).float()
 grid = grid.permute((1,2,3,0))
@@ -731,24 +416,7 @@ sampler = GridSample(grid, s2_size)
 out11 = sampler(s2_t1)
 nib.Nifti1Image(out11[0].numpy(), S2A).to_filename(d / f"affine_{s2}-to-{s1}.nii")
 
-
-
-
-
-
 """
-
-# t1 = SpatialCrop(in_size, out_size, out_center)
-# s2_deform_backward_crop = t1(s2_deform_backward)
-
-# self = XSubWarpImage(s1_deform, s2_deform_backward_crop, s1_size)
-# out1 = self(s1_t1)
-
-# t2 = PadTransform(in_size, out_size, out_center)
-
-# affine = nib.load(d / f"ABIDE.{s2}.deform_backward.nii").affine
-# nib.Nifti1Image(out1[0].numpy(), affine).to_filename(d / "out_s1-to-s2.nii")
-
 
 class XSubWarpImage(BaseTransform):
     def __init__(
@@ -816,7 +484,7 @@ class XSubWarpImage(BaseTransform):
 
 
 
-class XSubWarpSurface(BaseTransform):
+class XSubWarpSurface_v1(BaseTransform):
     def __init__(
         self,
         s1_deform_backward: torch.Tensor,
@@ -860,10 +528,55 @@ class XSubWarpSurface(BaseTransform):
         self.deformation_field = sampler(s2_deform, padding_mode="border")
         self.size = self.deformation_field.size()[-3:]
 
+
     def forward(self, surface):
         sampler = GridSample(surface, self.size)
         return sampler(self.deformation_field, padding_mode="border").squeeze().T
 
+
+
+class XSubWarpSurface_v2(BaseTransform):
+    def __init__(
+        self,
+        s1_deform_backward: torch.Tensor,
+        s2_deform: torch.Tensor,
+        device: None | torch.device = None,
+    ) -> None:
+        """Warp a surface from subject 1 (voxel) space to subject 2 (voxel)
+        space. The mapping is achieved by composing the supplied deformation
+        fields, i.e.,
+
+                      s2_deform            s1_deform_backward
+            S2[vox]     <---     MNI[vox]         <---          S1[vox]
+
+        such that, when applied to a surface in subject 1 space, they will push
+        the vertices into the space of subject 2. Note that this is the inverse
+        operation of `XSubWarpImage`: XSubWarpImage deforms the image
+        grid of S2 to S1 space and pulls the values. XSubWarpSurface pushes
+        coordinates in S1 space to S2 space.
+
+        Parameters
+        ----------
+        s1_deform_backward :
+            Backward deformation field of subject 1. The backward deformation
+            maps each voxel in subject 1 space to the corresponding coordinate
+            in MNI *voxel* space. Backward deformations has subject affine and
+            subject size.
+        s2_deform :
+            Forward deformation field of subject 2. The forward deformation
+            maps each voxel in MNI152 space to the corresponding coordinate in
+            subject 2 *voxel* space. Forward deformations has MNI affine and
+            MNI size.
+        """
+        super().__init__(device)
+        self.s1_deform_backward = s1_deform_backward
+        self.s2_deform = s2_deform
+
+    def forward(self, surface):
+        self2mni = GridSample(surface, self.s1_deform_backward.size()[-3:])
+        surface_mni = self2mni(self.s1_deform_backward, padding_mode="border").T
+        mni2other = GridSample(surface_mni, self.s2_deform.size()[-3:])
+        return mni2other(self.s2_deform, padding_mode="border").T
 
 class CheckCoordsInside(BaseTransform):
     def __init__(
@@ -1165,8 +878,8 @@ class GridSample(BaseTransform):
             ).to(image.dtype)
 
         if self.grid_ndim == 2:
-            sample.squeeze_((2, 3))
-        sample.squeeze_(0)
+            sample.squeeze_((3, 4)) # remove H,D dims
+        sample.squeeze_(0) # remove batch dim if not present
 
         return sample
 

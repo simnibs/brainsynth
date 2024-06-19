@@ -92,7 +92,7 @@ class DefaultSynthBuilder(SynthBuilder):
                     CenterFromString,
                     SelectState("in_size"),
                     SelectState("surface_bbox"),
-                    align_corners = config.align_corners,
+                    align_corners=config.align_corners,
                 ),
             ),
             # the deformed grid
@@ -254,11 +254,22 @@ class XSubSynthBuilder(SynthBuilder):
     def build(self, config: SynthesizerConfig):
         device = config.device
 
-        assert config.out_center_str == "image", "Currently, only `image` center specification is compatible with xsub builder"
+        # assert (
+        #     config.out_center_str == "image"
+        # ), "Currently, only `image` center specification is compatible with xsub builder"
 
         # ---------------------------------------------------------------------
         # The spatial augmentation pipeline
         # ---------------------------------------------------------------------
+
+        warp_surface = SubPipeline(
+            PipelineModule(
+                XSubWarpSurface_v2, # or XSubWarpSurface_v1
+                # SelectState("self_mni_backward_cropped"),
+                SelectImage("mni152_nonlin_backward"),
+                SelectImage("other_mni152_nonlin_forward"),
+            ),
+        )
 
         state = dict(
             # spacing of photos (slices)
@@ -281,35 +292,47 @@ class XSubSynthBuilder(SynthBuilder):
                 SelectImage("other_mni152_nonlin_backward"),
                 SpatialSize(),
             ),
-            # SurfaceBoundingBox needs some work
-            padded_surface_bbox=Pipeline(
+            surface_bbox=Pipeline(
                 SelectInitialVertices(),
-                # pad so hopefully the pial surface is inside...
-                SurfaceBoundingBox(floor_and_ceil=True, pad=20.0, reduce=True),
-                PipelineModule(
-                    RestrictBoundingBox,
-                    SelectState("self_size"),
-                    device=device,
-                ),
+                SurfaceBoundingBox(),
                 unpack_inputs=False,
             ),
+            # padded_surface_bbox=Pipeline(
+            #     SelectInitialVertices(),
+            #     # pad so hopefully the pial surface is inside...
+            #     SurfaceBoundingBox(floor_and_ceil=True, pad=20.0, reduce=True),
+            #     PipelineModule(
+            #         RestrictBoundingBox,
+            #         SelectState("self_size"),
+            #         device=device,
+            #     ),
+            #     unpack_inputs=False,
+            # ),
             # where to center the (output) FOV in the input image space
             self_out_center=Pipeline(
                 ServeValue(config.out_center_str),
                 PipelineModule(
                     CenterFromString,
                     SelectState("self_size"),
-                    align_corners = config.align_corners,
+                    SelectState("surface_bbox"),
+                    align_corners=config.align_corners,
                 ),
             ),
-            other_out_center=Pipeline(
-                ServeValue(config.out_center_str),
-                PipelineModule(
-                    CenterFromString,
-                    SelectState("other_size"),
-                    align_corners = config.align_corners,
-                ),
+            # transform center to `other`
+            other_out_center = Pipeline(
+                SelectState("self_out_center"),
+                ApplyFunction(torch.atleast_2d),
+                warp_surface,
+                ApplyFunction(torch.squeeze),
             ),
+            # other_out_center=Pipeline(
+            #     ServeValue(config.out_center_str),
+            #     PipelineModule(
+            #         CenterFromString,
+            #         SelectState("other_size"),
+            #         align_corners=config.align_corners,
+            #     ),
+            # ),
             # cropping parameters in `other` space
             crop_params=Pipeline(
                 SelectState("other_size"),
@@ -321,18 +344,18 @@ class XSubSynthBuilder(SynthBuilder):
             ),
             # we don't need the entire space of `self` in order to transform
             # the surface so crop to a bounding box around the surface(s)
-            self_mni_backward_cropped = Pipeline(
-                SelectImage("mni152_nonlin_backward"),
-                PipelineModule(
-                    SpatialCrop,
-                    size=SelectState("self_size"),
-                    start=SelectState("padded_surface_bbox", 0), # recursive selection
-                    stop=SelectState("padded_surface_bbox", 1),
-                ),
-            ),
+            # self_mni_backward_cropped=Pipeline(
+            #     SelectImage("mni152_nonlin_backward"),
+            #     PipelineModule(
+            #         SpatialCrop,
+            #         size=SelectState("self_size"),
+            #         start=SelectState("padded_surface_bbox", 0),  # recursive selection
+            #         stop=SelectState("padded_surface_bbox", 1),
+            #     ),
+            # ),
             # depending on the desired output FOV, we don't need to fill the
             # entire space of `other` so crop it
-            other_mni_backward_cropped = Pipeline(
+            other_mni_backward_cropped=Pipeline(
                 SelectImage("other_mni152_nonlin_backward"),
                 PipelineModule(
                     SpatialCrop,
@@ -347,7 +370,7 @@ class XSubSynthBuilder(SynthBuilder):
                 XSubWarpImage,
                 SelectImage("mni152_nonlin_forward"),
                 SelectState("other_mni_backward_cropped"),
-                SelectState("self_size"), # size of the input we sample *from*
+                SelectState("self_size"),  # size of the input we sample *from*
             ),
             # We used a cropped image in `other` space so pad to achieve
             # desired output size
@@ -359,25 +382,27 @@ class XSubSynthBuilder(SynthBuilder):
 
         surface_deformation = SubPipeline(
             # compensate for offset caused by cropping in self space
-            PipelineModule(
-                TranslationTransform,
-                SelectState("padded_surface_bbox", 0), # lower left
-                invert = True,
-                device=device,
-            ),
-            PipelineModule(
-                XSubWarpSurface,
-                SelectState("self_mni_backward_cropped"),
-                SelectImage("other_mni152_nonlin_forward"),
-            ),
+            # PipelineModule(
+            #     TranslationTransform,
+            #     SelectState("padded_surface_bbox", 0),  # lower left
+            #     invert=True,
+            #     device=device,
+            # ),
+            # PipelineModule(
+            #     XSubWarpSurface_v1,
+            #     SelectState("self_mni_backward_cropped"),
+            #     SelectImage("other_mni152_nonlin_forward"),
+            # ),
+            warp_surface,
             # compensate for offset caused by cropping in other space (because
             # we cropped to out_size)
             PipelineModule(
                 TranslationTransform,
                 SelectState("crop_params", "offset"),
-                invert = True,
+                invert=True,
                 device=device,
             ),
+            CheckCoordsInside(config.out_size, device=device),
         )
 
         # ---------------------------------------------------------------------
