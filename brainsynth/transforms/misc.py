@@ -1,3 +1,5 @@
+from typing import Any,Sequence
+
 import torch
 
 from .base import BaseTransform
@@ -19,8 +21,10 @@ class ExtractDictKeys(BaseTransform):
         return tuple(d.keys())
 
 class Intersection(BaseTransform):
-    def __init__(self, elements, device: None | torch.device = None) -> None:
+    def __init__(self, elements: Sequence[Any], device: None | torch.device = None) -> None:
         super().__init__(device)
+        if len(elements) == 0:
+            raise ValueError(f"Cannot compute intersection when `elements` is empty (elements = {elements}).")
         self.elements = elements
 
     def forward(self, test_elements):

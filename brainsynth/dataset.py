@@ -6,6 +6,9 @@ import torch
 
 from brainsynth.constants import IMAGE, SURFACE
 
+from brainsynth.synthesizer import Synthesizer
+
+from brainsynth.config import DatasetConfig, SynthesizerConfig
 
 def atleast_4d(tensor):
     return atleast_4d(tensor[None]) if tensor.ndim < 4 else tensor
@@ -21,7 +24,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         root_dir: str | Path,
         name: str,
         subjects: None | str | list | tuple = None,
-        synthesizer=None,
+        synthesizer: None | Synthesizer | SynthesizerConfig = None,
         images: None | list | tuple = None,
         ds_structure: str = "flat",
         target_surface_resolution: None | int = 6,
@@ -78,9 +81,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         # )
         self.initial_surface_resolution = initial_surface_resolution
 
-        if synthesizer:
-            assert synthesizer.device == torch.device("cpu")
-        self.synthesizer = synthesizer
+        match synthesizer:
+            case Synthesizer():
+                self.synthesizer = synthesizer
+            case SynthesizerConfig():
+                self.synthesizer = Synthesizer(synthesizer)
+            case None:
+                self.synthesizer = None
+
+        if self.synthesizer is not None:
+            assert self.synthesizer.device == torch.device("cpu")
 
     def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
         self.ds_dir = Path(ds_dir)
@@ -305,10 +315,11 @@ def make_dataloader(
 
 
 def setup_dataloader(
-    dataset_kwargs: dict[dict],
+    dataset_config: DatasetConfig,
     dataloader_kwargs: dict | None = None,
 ):
-    """Construct a dataloader by concatenating `datasets` (e.g., ds0, ds1).
+    """Construct a dataloader by first constructing datasets from `dataset_kwargs`
+    and concatenating them.
 
     Parameters
     ----------
@@ -322,7 +333,7 @@ def setup_dataloader(
 
     # Individual datasets
     concat_ds = torch.utils.data.ConcatDataset(
-        [SynthesizedDataset(**kw) for kw in dataset_kwargs.values()]
+        [SynthesizedDataset(**kw) for kw in dataset_config.dataset_kwargs.values()]
     )
     # original datasets are in
     # dataloader.dataset.dataset.datasets

@@ -66,7 +66,7 @@ class SynthesizerConfig:
 
         # if alternative_images is not None:
         # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)
-        self.alternative_images = alternative_images
+        self.alternative_images = alternative_images if alternative_images is not None else []
 
     def __repr__(self):
         return "\n".join([f"{k}: {v}" for k, v in self.__dict__.items()])
