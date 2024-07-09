@@ -7,54 +7,11 @@ class BaseTransform(torch.nn.Module):
         self.device = torch.device("cpu") if device is None else device
 
 
-# class ReturnTransform(BaseTransform):
-#     def __init__(self, x):
-#         super().__init__()
-#         self.x = x
-#     def forward(self):
-#         return self.x
-
-# class DEPRECATEDInputSelector(BaseTransform):
-#     def __init__(
-#         self,
-#         images: dict[str, torch.Tensor],
-#         surfaces: dict[str, dict[str, torch.Tensor]],
-#         initial_vertices: dict[str, torch.Tensor],
-#         state: dict[str, torch.Tensor],
-#     ):
-#         super().__init__()
-#         self.mapped_inputs = dict(
-#             image=images,
-#             surface=surfaces,
-#             initial_vertices=initial_vertices,
-#             state=state,
-#         )
-
-#     def recursive_selection(self, mapped_input, keys):
-#         selection = mapped_input[keys[0]]
-#         if len(keys) == 1:
-#             return selection
-#         else:
-#             return self.recursive_selection(selection, keys[1:])
-
-#     def forward(self, selection: str):
-#         """
-
-#         image:T1w
-#         image:segmentation  grabs ["segmentation"] from the dict of input images
-#         surface:lh:white    grabs ["lh"]["white"] from the dict of input surfaces
-
-#         state
-#             in_size         input size
-#             out_size        output field-of-view
-#             grid            image grid (same shape as out_size)
-#             scale           the average scaling of the inputs (from the linear transformation)
-
-#         """
-#         osel = selection.split(":")
-#         return ReturnTransform(
-#             self.recursive_selection(self.mapped_inputs[osel[0]], osel[1:])
-#         )
+class IdentityTransform(BaseTransform):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x):
+        return x
 
 class SequentialTransform(BaseTransform):
     def __init__(self, *transforms):

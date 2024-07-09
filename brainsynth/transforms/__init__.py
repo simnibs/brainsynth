@@ -2,7 +2,7 @@ from typing import Type
 
 import torch
 
-from .base import BaseTransform, EnsureDevice, EnsureDType, RandomChoice
+from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice
 from .contrast import (
     IntensityNormalization,
     RandBiasfield,
