@@ -12,7 +12,7 @@ class Synthesizer(torch.nn.Module):
         self.config = config
         self.ensure_device = EnsureDevice(self.config.device)
 
-        self.builder = getattr(brainsynth.config.synthesizer_builder, config.builder)()
+        self.builder = getattr(brainsynth.config.synthesizer_builder, config.builder)(config)
 
     def execute(self, pipelines: dict, mapped_inputs: dict, out: dict | None = None):
         out = out if out is not None else {}
@@ -45,7 +45,7 @@ class Synthesizer(torch.nn.Module):
         }
 
         # Build the pipelines
-        state_pipeline, output_pipeline = self.builder.build(self.config)
+        state_pipeline, output_pipeline = self.builder.build()
 
         # Set the internal state
         mapped_inputs["state"] = self.execute(

@@ -16,6 +16,50 @@ def subjects_subset_str(p, ds, subset=None):
 # )
 # ds_config.get_dataset_kwargs()
 
+class XDatasetConfig:
+    def __init__(
+        self,
+        root_dir: Path | str,
+        subject_dir: Path | str,
+        subject_subset: None | str,
+        datasets: None | list | tuple = None,
+        ds_structure="flat",
+    ) -> None:
+
+        known_datasets = (
+            "ABIDE",
+            "ADHD200",
+            "ADNI3",
+            "AIBL",
+            "Buckner40",
+            "Chinese-HCP",
+            "COBRE",
+            "HCP",
+            "ISBI2015",
+            "MCIC",
+            "OASIS3",
+        )
+
+        datasets = datasets or known_datasets
+
+        root_dir = Path(root_dir)
+        subject_dir = Path(subject_dir)
+
+        ds_is_known = [ds in known_datasets for ds in datasets]
+        assert all(
+            ds_is_known
+        ), f"Unknown dataset(s) {[ds for ds, i in zip(datasets, ds_is_known) if not i]} (from {known_datasets})"
+
+        self.dataset_kwargs = {
+            ds: dict(
+                root_dir=root_dir,
+                name=ds,
+                subjects=subjects_subset_str(subject_dir, ds, subject_subset),
+                ds_structure=ds_structure,
+            )
+            for ds in datasets
+        }
+
 
 class DatasetConfig:
     def __init__(
@@ -30,6 +74,7 @@ class DatasetConfig:
         target_surface_resolution=5,
         target_surface_hemispheres="both",
         initial_surface_resolution=0,
+        xdataset: None | XDatasetConfig = None,
     ):
         known_datasets = (
             "ABIDE",
@@ -89,6 +134,7 @@ class DatasetConfig:
                 target_surface_resolution=target_surface_resolution,
                 target_surface_hemispheres=target_surface_hemispheres,
                 initial_surface_resolution=initial_surface_resolution,
+                xdataset=xdataset,
             )
             for ds in datasets
         }

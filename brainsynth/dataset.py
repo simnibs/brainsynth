@@ -6,9 +6,8 @@ import torch
 
 from brainsynth.constants import IMAGE, SURFACE
 
+from brainsynth.config import DatasetConfig, SynthesizerConfig, XDatasetConfig
 from brainsynth.synthesizer import Synthesizer
-
-from brainsynth.config import DatasetConfig, SynthesizerConfig
 
 def atleast_4d(tensor):
     return atleast_4d(tensor[None]) if tensor.ndim < 4 else tensor
@@ -16,6 +15,19 @@ def atleast_4d(tensor):
 
 def load_dataset_subjects(filename):
     return np.genfromtxt(filename, dtype="str").tolist()
+
+def _load_image(filename, dtype):
+    # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
+    data = torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype)
+    if data.ndim < 3:
+        raise ValueError(f"Image {filename} has less than three dimensions (shape is {data.shape})")
+    elif data.ndim == 3: # (x,y,z) -> (c,x,y,z)
+        data = atleast_4d(data)
+    elif data.ndim == 4: # (x,y,z,c) -> (c,x,y,z)
+        data = data.permute((3,0,1,2)).contiguous()
+    elif data.ndim > 4:
+        raise ValueError(f"Image {filename} has more than four dimensions (shape is {data.shape})")
+    return data
 
 
 class SynthesizedDataset(torch.utils.data.Dataset):
@@ -31,6 +43,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_surface_hemispheres: None | list | str | tuple = "both",
         # initial_surface_type: str = "template",  # or prediction
         initial_surface_resolution: int = 0,
+        xdataset: None | XDatasetConfig = None, # or XDataset
     ):
         """
 
@@ -91,6 +104,18 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
         if self.synthesizer is not None:
             assert self.synthesizer.device == torch.device("cpu")
+
+        match xdataset:
+            case None:
+                self.xdataset = None
+            case XDataset():
+                self.xdataset = xdataset
+            case XDatasetConfig():
+                self.xdataset = torch.utils.data.ConcatDataset(
+                    [XDataset(**kw) for kw in xdataset.dataset_kwargs.values()]
+                )
+            case _:
+                raise ValueError("Wrong type for `xdataset`")
 
     def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
         self.ds_dir = Path(ds_dir)
@@ -192,6 +217,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         images = self.load_images(subject)
         surfaces, initial_vertices = self.load_surfaces(subject)
 
+        if self.xdataset is not None:
+            # select a random subject from xdataset
+            idx = torch.randint(0, len(self.xdataset), (1, ))
+            ximages = self.xdataset[idx]
+            # to distinguish from "self"
+            images |= {f"other:{k}":v for k,v in ximages.items()}
+
         if self.synthesizer is None:
             return images, surfaces, initial_vertices
         else:
@@ -204,26 +236,14 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             # Not all subjects have all images
             img = getattr(IMAGE.images, image)
             if (fi := self.get_image_filename(subject, img.filename)).exists():
-                images[image] = self.load_image(fi, img.dtype)
+                images[image] = _load_image(fi, img.dtype)
                 # If the image has an associated defacing mask, load it
                 if img.defacingmask:
                     mask = getattr(IMAGE.images, img.defacingmask)
                     if (fm := self.get_image_filename(subject, mask.filename)).exists():
-                        images[img.defacingmask] = self.load_image(fm, mask.dtype)
+                        images[img.defacingmask] = _load_image(fm, mask.dtype)
         return images
 
-    def load_image(self, filename, dtype):
-        # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
-        data = torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype)
-        if data.ndim < 3:
-            raise ValueError(f"Image {filename} has less than three dimensions (shape is {data.shape})")
-        elif data.ndim == 3: # (x,y,z) -> (c,x,y,z)
-            data = atleast_4d(data)
-        elif data.ndim == 4: # (x,y,z,c) -> (c,x,y,z)
-            data = data.permute((3,0,1,2)).contiguous()
-        elif data.ndim > 4:
-            raise ValueError(f"Image {filename} has more than four dimensions (shape is {data.shape})")
-        return data
 
     def load_surfaces(self, subject):
         if self.target_surface_resolution is None:
@@ -288,6 +308,66 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
     # def load_info(self, subject_dir):
     #     return torch.load(subject_dir / constants.info)
+
+
+class XDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        root_dir: str | Path,
+        name: str,
+        subjects: None | str | list | tuple = None,
+        ds_structure: str = "flat",
+    ):
+        """A dataset which loads forward and backward deformations for a
+        particular subject.
+
+        Inherits from SynthesizedDataset but hardcodes some settings which
+        makes it appropriate for cross-subject morphing.
+        """
+        self._initialize_io_settings(root_dir, name, ds_structure, subjects)
+
+        images = ["mni152_nonlin_backward", "mni152_nonlin_forward"]
+        self._initialize_image_settings(images)
+
+
+    def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
+        self.ds_dir = Path(ds_dir)
+        self.name = name
+        self.ds_structure = ds_structure
+
+        # Subjects
+        self.subjects = (
+            load_dataset_subjects(subjects) if isinstance(subjects, (Path, str)) else subjects
+        )
+        self.n_subjects = len(self.subjects)
+
+        # Filename generators
+        match self.ds_structure:
+            case "flat":
+                def get_image_filename(subject, image):
+                    return self.ds_dir / f"{self.name}.{subject}.{image}"
+            case "tree":
+                def get_image_filename(subject, image):
+                    return self.ds_dir / self.name / subject / image
+
+        self.get_image_filename = get_image_filename
+
+    def _initialize_image_settings(self, images):
+        self.images = list(IMAGE.images._fields) if images is None else list(images)
+
+    def __len__(self):
+        return len(self.subjects)
+
+    def __getitem__(self, idx):
+        return self.load_images(self.subjects[idx])
+
+    def load_images(self, subject):
+        images = {}
+        for image in self.images:
+            img = getattr(IMAGE.images, image)
+            fi = self.get_image_filename(subject, img.filename)
+            images[image] = _load_image(fi, img.dtype)
+        return images
 
 
 def make_dataloader(

@@ -14,13 +14,13 @@ class SynthBuilder:
         """Optional."""
         pass
 
-    def build_state(self):
-        raise NotImplementedError
-
     def build_spatial_transform(self):
         raise NotImplementedError
 
     def build_intensity_transform(self):
+        raise NotImplementedError
+
+    def build_state(self):
         raise NotImplementedError
 
     def build_output(self):
@@ -49,6 +49,7 @@ class SynthBuilder:
         self.initialize_spatial_transform()
         state = self.build_state()
 
+        # The following relies (may rely) on the state
         self.build_spatial_transform()
         self.build_intensity_transform()
 
@@ -57,7 +58,7 @@ class SynthBuilder:
         return state, output
 
 
-class DefaultSynthBuilder(SynthBuilder):
+class DefaultSynth(SynthBuilder):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -93,7 +94,7 @@ class DefaultSynthBuilder(SynthBuilder):
         self.inv_linear_transform = partial(self.linear_transform, inverse=True)
 
     def build_state(self):
-        state = dict(
+        return dict(
             # spacing of photos (slices)
             photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
             # available images
@@ -140,7 +141,6 @@ class DefaultSynthBuilder(SynthBuilder):
                 ),
             ),
         )
-        return state
 
     def build_intensity_transform(self):
         # Example 1: Random skull-stripping
@@ -267,7 +267,49 @@ class DefaultSynthBuilder(SynthBuilder):
         )
 
 
-class OnlySynthBuilder(DefaultSynthBuilder):
+class DefaultSelect(DefaultSynth):
+    def __init__(self, config: SynthesizerConfig) -> None:
+        super().__init__(config)
+
+
+    def build_state(self):
+        state = super().build_state()
+
+        state["selectable_images"] = Pipeline(
+            SelectState("available_images"),
+            Intersection(self.config.alternative_images),
+            unpack_inputs=False,
+        )
+        return state
+
+    def build_image(self):
+        """No intensity augmentation."""
+
+        return Pipeline(
+            # Select one of the available (valid) images
+            PipelineModule(
+                SelectImage,
+                PipelineModule(
+                    RandomChoice,
+                    # equal probability of selecting each image
+                    SelectState("selectable_images"),
+                ),
+            ),
+            # Transform to output FOV
+            self.image_deformation,
+            self.resolution_augmentation(),
+            self.intensity_normalization,
+        )
+
+class DefaultSelectIso(DefaultSelect):
+    def __init__(self, config: SynthesizerConfig) -> None:
+        super().__init__(config)
+
+    def resolution_augmentation(self):
+        return IdentityTransform()
+
+
+class OnlySynth(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -285,7 +327,7 @@ class OnlySynthBuilder(DefaultSynthBuilder):
         self.inv_nonlinear_transform = IdentityTransform()
 
 
-class OnlySelectBuilder(OnlySynthBuilder):
+class OnlySelect(OnlySynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -303,6 +345,7 @@ class OnlySelectBuilder(OnlySynthBuilder):
             Intersection(self.config.alternative_images),
             unpack_inputs=False,
         )
+        return state
 
     def build_image(self):
         """No intensity augmentation."""
@@ -324,17 +367,17 @@ class OnlySelectBuilder(OnlySynthBuilder):
         )
 
 
-class IsoOnlySynthBuilder(OnlySynthBuilder):
+class OnlySynthIso(OnlySynth):
     def resolution_augmentation(self):
         return IdentityTransform()
 
 
-class IsoOnlySelectBuilder(OnlySelectBuilder):
+class OnlySelectIso(OnlySelect):
     def resolution_augmentation(self):
         return IdentityTransform()
 
 
-class SynthOrSelectImageBuilder(DefaultSynthBuilder):
+class SynthOrSelectImage(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -396,7 +439,7 @@ class SynthOrSelectImageBuilder(DefaultSynthBuilder):
         )
 
 
-class XSubSynthBuilder(DefaultSynthBuilder):
+class XSubSynth(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         super().__init__(config)
 
@@ -406,7 +449,7 @@ class XSubSynthBuilder(DefaultSynthBuilder):
                 XSubWarpSurface_v2,  # or XSubWarpSurface_v1
                 # SelectState("self_mni_backward_cropped"),
                 SelectImage("mni152_nonlin_backward"),
-                SelectImage("other_mni152_nonlin_forward"),
+                SelectImage("other:mni152_nonlin_forward"),
             ),
         )
 
@@ -437,7 +480,7 @@ class XSubSynthBuilder(DefaultSynthBuilder):
             # PipelineModule(
             #     XSubWarpSurface_v1,
             #     SelectState("self_mni_backward_cropped"),
-            #     SelectImage("other_mni152_nonlin_forward"),
+            #     SelectImage("other:mni152_nonlin_forward"),
             # ),
             self.warp_surface,
             # compensate for offset caused by cropping in other space (because
@@ -466,14 +509,13 @@ class XSubSynthBuilder(DefaultSynthBuilder):
             self_size=Pipeline(
                 PipelineModule(
                     SelectImage,
-                    # doesn't matter which is selected - all should be the same size!
                     SelectState("available_images", 0),
                 ),
                 SpatialSize(),
             ),
             # the spatial dimensions of the image to warp *to*
             other_size=Pipeline(
-                SelectImage("other_mni152_nonlin_backward"),
+                SelectImage("other:mni152_nonlin_backward"),
                 SpatialSize(),
             ),
             surface_bbox=Pipeline(
@@ -540,7 +582,7 @@ class XSubSynthBuilder(DefaultSynthBuilder):
             # depending on the desired output FOV, we don't need to fill the
             # entire space of `other` so crop it
             other_mni_backward_cropped=Pipeline(
-                SelectImage("other_mni152_nonlin_backward"),
+                SelectImage("other:mni152_nonlin_backward"),
                 PipelineModule(
                     SpatialCrop,
                     size=SelectState("other_size"),

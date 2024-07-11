@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=niftyreg          # Job name
-#SBATCH --output=/mnt/scratch/personal/jesperdn/slurm_logs/%A_%a.log          # A = master job id, a = task job id
+#SBATCH --output=/mnt/scratch/personal/jesperdn/slurm_logs/%x_%A_%a.log          # A = master job id, a = task job id
 #SBATCH --nodes=1                   # Relevant when program implements MPI (multi system/distributed parallelism)
 #SBATCH --ntasks=1                  # Relevant when program implements MPI (multi system/distributed parallelism)
 #SBATCH --cpus-per-task=4           # Relevant when program implements MP (single system parallelism, e.g., OpenMP, TBB)
@@ -90,20 +90,20 @@ reg_transform -invAff $AFFINE $AFFINE_BACK
 reg_transform -ref $MNI152 -def $CPP $MNIREG
 reg_transform -ref $SUB_T1w -def $CPP_BACK $MNIREG_BACK
 
-# convert registrations from world coordinates to voxel coordinates
+# convert registrations from world coordinates to voxel coordinates, multiply by 100, and cast to int16
 python -c "
 import nibabel as nib;
 from nibabel.affines import apply_affine;
 import numpy as np;
 mni152_nonlin = nib.load('$MNIREG');
 mni152_nonlin_back = nib.load('$MNIREG_BACK');
-out = nib.Nifti1Image(apply_affine(np.linalg.inv(mni152_nonlin_back.affine), mni152_nonlin.get_fdata().squeeze()).astype(np.float32), mni152_nonlin.affine);
+data = np.round(100 * apply_affine(np.linalg.inv(mni152_nonlin_back.affine), mni152_nonlin.get_fdata().squeeze()));
+out = nib.Nifti1Image(data.astype(np.int16), mni152_nonlin.affine);
 out.to_filename('$MNIREG');
-out = nib.Nifti1Image(apply_affine(np.linalg.inv(mni152_nonlin.affine), mni152_nonlin_back.get_fdata().squeeze()).astype(np.float32), mni152_nonlin_back.affine);
+data = np.round(100 * apply_affine(np.linalg.inv(mni152_nonlin.affine), mni152_nonlin_back.get_fdata().squeeze()));
+out = nib.Nifti1Image(data.astype(np.int16), mni152_nonlin_back.affine);
 out.to_filename('$MNIREG_BACK');
 "
-
-# * 100 and cast to int16 ... ?
 
 mv $MNIREG $MNIREG_FORWARD
 mv $AFFINE $AFFINE_FORWARD

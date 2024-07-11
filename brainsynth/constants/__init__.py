@@ -71,16 +71,20 @@ Images = namedtuple(
         "flair_mask",
     ),
 )
+
 MetaData = namedtuple(
     "ImageData",
     ("filename", "dtype", "defacingmask"),
 )
 
+
 class ImageSettings:
     def __init__(self):
         self.labeling_scheme = LabelingScheme(
             brainseg=tuple(range(44)),  # brainseg.lut
-            brainseg_with_extracerebral=tuple(range(57)),  # brainseg_with_extracerebral.lut
+            brainseg_with_extracerebral=tuple(
+                range(57)
+            ),  # brainseg_with_extracerebral.lut
         )
 
         self.generation_labels = GenerationLabels(
@@ -112,8 +116,12 @@ class ImageSettings:
             mni_reg_x=MetaData("mni_reg.x.nii", torch.float, None),
             mni_reg_y=MetaData("mni_reg.y.nii", torch.float, None),
             mni_reg_z=MetaData("mni_reg.z.nii", torch.float, None),
-            mni152_nonlin_forward=MetaData("mni152_nonlin_forward.nii", torch.float, None),
-            mni152_nonlin_backward=MetaData("mni152_nonlin_backward.nii", torch.float, None),
+            mni152_nonlin_forward=MetaData(
+                "mni152_nonlin_forward.nii", torch.float, None
+            ),
+            mni152_nonlin_backward=MetaData(
+                "mni152_nonlin_backward.nii", torch.float, None
+            ),
             t1w=MetaData("T1w.nii", torch.float, "t1w_mask"),
             t1w_mask=MetaData("T1w.defacingmask.nii", torch.bool, None),
             t2w=MetaData("T2w.nii", torch.float, "t2w_mask"),
@@ -131,6 +139,8 @@ class ImageSettings:
             "mni_reg_x",
             "mni_reg_y",
             "mni_reg_z",
+            "mni152_nonlin_backward",
+            "mni152_nonlin_forward",
             "lp_dist_map",
             "lw_dist_map",
             "rp_dist_map",
@@ -138,9 +148,11 @@ class ImageSettings:
             "t1w",
         ]
 
+
 # ---------------------------
 # SURFACES
 # ---------------------------
+
 
 class SurfaceFiles:
     def __init__(self, hemispheres, types, resolutions):
@@ -148,10 +160,11 @@ class SurfaceFiles:
         for h in hemispheres:
             for r in resolutions:
                 for t in types:
-                    k = (h,t,r)
+                    k = (h, t, r)
                     self.prediction[k] = f"{h}.{t}.{r}.prediction.pt"
                     self.target[k] = f"{h}.{t}.{r}.target.pt"
-                self.template[(h,r)] = f"{h}.{r}.template.pt"
+                self.template[(h, r)] = f"{h}.{r}.template.pt"
+
 
 class SurfaceSettings:
     def __init__(self):
@@ -159,6 +172,7 @@ class SurfaceSettings:
         self.types: tuple = ("white", "pial")
         self.resolutions: tuple = (0, 1, 2, 3, 4, 5, 6)
         self.files = SurfaceFiles(self.hemispheres, self.types, self.resolutions)
+
 
 IMAGE = ImageSettings()
 SURFACE = SurfaceSettings()
