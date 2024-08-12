@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Callable
 
 import nibabel as nib
 import numpy as np
@@ -16,9 +17,12 @@ def atleast_4d(tensor):
 def load_dataset_subjects(filename):
     return np.genfromtxt(filename, dtype="str").tolist()
 
-def _load_image(filename, dtype):
+def _load_image(filename, dtype, transform: Callable | None = None):
     # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
-    data = torch.from_numpy(nib.load(filename).dataobj[:]).to(dtype=dtype)
+    data = torch.from_numpy(nib.load(filename).dataobj[:])
+    data = data if transform is None else transform(data)
+    data = data.to(dtype=dtype)
+
     if data.ndim < 3:
         raise ValueError(f"Image {filename} has less than three dimensions (shape is {data.shape})")
     elif data.ndim == 3: # (x,y,z) -> (c,x,y,z)
@@ -236,12 +240,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             # Not all subjects have all images
             img = getattr(IMAGE.images, image)
             if (fi := self.get_image_filename(subject, img.filename)).exists():
-                images[image] = _load_image(fi, img.dtype)
+                images[image] = _load_image(fi, img.dtype, img.transform)
                 # If the image has an associated defacing mask, load it
-                if img.defacingmask:
+                if img.defacingmask is not None:
                     mask = getattr(IMAGE.images, img.defacingmask)
                     if (fm := self.get_image_filename(subject, mask.filename)).exists():
                         images[img.defacingmask] = _load_image(fm, mask.dtype)
+
         return images
 
 
@@ -366,7 +371,7 @@ class XDataset(torch.utils.data.Dataset):
         for image in self.images:
             img = getattr(IMAGE.images, image)
             fi = self.get_image_filename(subject, img.filename)
-            images[image] = _load_image(fi, img.dtype)
+            images[image] = _load_image(fi, img.dtype, img.transform)
         return images
 
 

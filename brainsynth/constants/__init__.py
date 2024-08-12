@@ -1,4 +1,7 @@
 from collections import namedtuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
 
 import torch
 
@@ -72,11 +75,32 @@ Images = namedtuple(
     ),
 )
 
-MetaData = namedtuple(
-    "ImageData",
-    ("filename", "dtype", "defacingmask"),
-)
+@dataclass
+class ImageData:
+    filename: Path | str
+    dtype: torch.dtype
+    transform: Callable | None = None
+    defacingmask: None | str = None
 
+# distance maps (clipped at [-5, 5] mm) are encoded as
+#   distance * 20 + 128
+# so
+#   28 is -5
+#   128 is 0
+#   228 is 5.
+t_dist_map = lambda x: (x-128) / 20
+
+# mni_reg* are saved as world coordinates * 100
+# stored as int16
+t_mni_reg = lambda x: x / 100
+
+# brain_dist_map is saved as distance * 10 and saturates at 25.5 mm
+# stored as uint8
+t_brain_dist_map = lambda x: x / 10
+
+# mni152* are saved as *voxel* coordinates * 100
+# stored as int16
+t_mni152_reg = lambda x: x / 100
 
 class ImageSettings:
     def __init__(self):
@@ -90,7 +114,7 @@ class ImageSettings:
         self.generation_labels = GenerationLabels(
             n_labels=256,
             label_range=(0, 100),  # the actual labels; the rest are some mix of these
-            kmeans=(12, 13, 14, 15),
+            kmeans=(13, 14, 15, 16, 17), # (12, 13, 14, 15), #
             lesion=1,
             white=2,
             gray=3,
@@ -99,33 +123,33 @@ class ImageSettings:
         )
 
         self.images = Images(
-            brain_dist_map=MetaData("brain_dist_map.nii", torch.float, None),
-            brainseg=MetaData("brainseg.nii", torch.int32, None),
-            brainseg_with_extracerebral=MetaData(
-                "brainseg_with_extracerebral.nii", torch.int32, None
+            brain_dist_map=ImageData("brain_dist_map.nii", torch.float, t_brain_dist_map),
+            brainseg=ImageData("brainseg.nii", torch.int32),
+            brainseg_with_extracerebral=ImageData(
+                "brainseg_with_extracerebral.nii", torch.int32,
             ),
-            ct=MetaData("CT.nii", torch.float, "ct_mask"),
-            ct_mask=MetaData("CT.defacingmask.nii", torch.bool, None),
-            flair=MetaData("FLAIR.nii", torch.float, "ct_mask"),
-            flair_mask=MetaData("FLAIR.defacingmask.nii", torch.float, None),
-            generation_labels=MetaData("generation_labels.nii", torch.int32, None),
-            lp_dist_map=MetaData("lp_dist_map.nii", torch.float, None),
-            lw_dist_map=MetaData("lw_dist_map.nii", torch.float, None),
-            rp_dist_map=MetaData("rp_dist_map.nii", torch.float, None),
-            rw_dist_map=MetaData("rw_dist_map.nii", torch.float, None),
-            mni_reg_x=MetaData("mni_reg.x.nii", torch.float, None),
-            mni_reg_y=MetaData("mni_reg.y.nii", torch.float, None),
-            mni_reg_z=MetaData("mni_reg.z.nii", torch.float, None),
-            mni152_nonlin_forward=MetaData(
-                "mni152_nonlin_forward.nii", torch.float, None
+            ct=ImageData("CT.nii", torch.float, defacingmask="ct_mask"),
+            ct_mask=ImageData("CT.defacingmask.nii", torch.bool),
+            flair=ImageData("FLAIR.nii", torch.float, defacingmask="flair_mask"),
+            flair_mask=ImageData("FLAIR.defacingmask.nii", torch.float),
+            generation_labels=ImageData("generation_labels.nii", torch.int32),
+            lp_dist_map=ImageData("lp_dist_map.nii", torch.float, t_dist_map),
+            lw_dist_map=ImageData("lw_dist_map.nii", torch.float, t_dist_map),
+            rp_dist_map=ImageData("rp_dist_map.nii", torch.float, t_dist_map),
+            rw_dist_map=ImageData("rw_dist_map.nii", torch.float, t_dist_map),
+            mni_reg_x=ImageData("mni_reg.x.nii", torch.float, t_mni_reg),
+            mni_reg_y=ImageData("mni_reg.y.nii", torch.float, t_mni_reg),
+            mni_reg_z=ImageData("mni_reg.z.nii", torch.float, t_mni_reg),
+            mni152_nonlin_forward=ImageData(
+                "mni152_nonlin_forward.nii", torch.float, t_mni152_reg
             ),
-            mni152_nonlin_backward=MetaData(
-                "mni152_nonlin_backward.nii", torch.float, None
+            mni152_nonlin_backward=ImageData(
+                "mni152_nonlin_backward.nii", torch.float, t_mni152_reg
             ),
-            t1w=MetaData("T1w.nii", torch.float, "t1w_mask"),
-            t1w_mask=MetaData("T1w.defacingmask.nii", torch.bool, None),
-            t2w=MetaData("T2w.nii", torch.float, "t2w_mask"),
-            t2w_mask=MetaData("T2w.defacingmask.nii", torch.bool, None),
+            t1w=ImageData("T1w.nii", torch.float, defacingmask="t1w_mask"),
+            t1w_mask=ImageData("T1w.defacingmask.nii", torch.bool),
+            t2w=ImageData("T2w.nii", torch.float, defacingmask="t2w_mask"),
+            t2w_mask=ImageData("T2w.defacingmask.nii", torch.bool),
         )
         self.dist_maps = {"lp_dist_map", "lw_dist_map", "rp_dist_map", "rw_dist_map"}
 
@@ -134,8 +158,6 @@ class ImageSettings:
             "brainseg",
             "brainseg_with_extracerebral",
             "generation_labels",
-            "mni152_nonlin_backward",
-            "mni152_nonlin_forward",
             "mni_reg_x",
             "mni_reg_y",
             "mni_reg_z",
@@ -156,13 +178,18 @@ class ImageSettings:
 
 class SurfaceFiles:
     def __init__(self, hemispheres, types, resolutions):
-        self.prediction, self.target, self.template = {}, {}, {}
+        self.prediction = {}
+        self.target = {}
+        self.template = {}
+        self.decoupled_target = {}
+
         for h in hemispheres:
             for r in resolutions:
                 for t in types:
                     k = (h, t, r)
                     self.prediction[k] = f"{h}.{t}.{r}.prediction.pt"
                     self.target[k] = f"{h}.{t}.{r}.target.pt"
+                    self.decoupled_target[k] = f"{h}.{t}.{r}.target-decoupled.pt"
                 self.template[(h, r)] = f"{h}.{r}.template.pt"
 
 

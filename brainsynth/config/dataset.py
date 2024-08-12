@@ -71,7 +71,7 @@ class DatasetConfig:
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
         ds_structure="flat",
-        target_surface_resolution=5,
+        target_surface_resolution: int | None = 5,
         target_surface_hemispheres="both",
         initial_surface_resolution=0,
         xdataset: None | XDatasetConfig = None,
