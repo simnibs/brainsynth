@@ -72,8 +72,8 @@ class DefaultSynth(SynthBuilder):
     def initialize_spatial_transform(self):
         self.nonlinear_transform = RandNonlinearTransform(
             self.config.out_size,
-            scale_min=0.03,
-            scale_max=0.06,
+            scale_min=0.03, # 0.10,
+            scale_max=0.06, # 0.15,
             std_max=4.0,
             exponentiate_field=True,
             grid=self.config.grid,
@@ -194,6 +194,7 @@ class DefaultSynth(SynthBuilder):
                 device=self.device,
             ),
             RandGammaTransform(mean=0.0, std=1.0, prob=0.75),
+            self.image_deformation, # Transform to output FOV
             RandBiasfield(
                 self.config.out_size,
                 scale_min=0.02,
@@ -204,8 +205,6 @@ class DefaultSynth(SynthBuilder):
                 prob=0.9,
                 device=self.device,
             ),
-            # Transform to output FOV
-            self.image_deformation,
             self.resolution_augmentation(),
             self.intensity_normalization,
         )
@@ -267,53 +266,12 @@ class DefaultSynth(SynthBuilder):
         )
 
 
-class DefaultSelect(DefaultSynth):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        super().__init__(config)
-
-
-    def build_state(self):
-        state = super().build_state()
-
-        state["selectable_images"] = Pipeline(
-            SelectState("available_images"),
-            Intersection(self.config.alternative_images),
-            unpack_inputs=False,
-        )
-        return state
-
-    def build_image(self):
-        """No intensity augmentation."""
-
-        return Pipeline(
-            # Select one of the available (valid) images
-            PipelineModule(
-                SelectImage,
-                PipelineModule(
-                    RandomChoice,
-                    # equal probability of selecting each image
-                    SelectState("selectable_images"),
-                ),
-            ),
-            # Transform to output FOV
-            self.image_deformation,
-            self.resolution_augmentation(),
-            self.intensity_normalization,
-        )
-
-class DefaultSelectIso(DefaultSelect):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        super().__init__(config)
-
-    def resolution_augmentation(self):
-        return IdentityTransform()
-
-
 class OnlySynth(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
             - synthesis of an image as the input image for training
+            - resolution augmentation from DefaultSynth
 
         and thus *no* spatial augmentation (only extracting a particular FOV).
         """
@@ -360,8 +318,17 @@ class OnlySelect(OnlySynth):
                     SelectState("selectable_images"),
                 ),
             ),
-            # Transform to output FOV
-            self.image_deformation,
+            self.image_deformation, # Transform to output FOV
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.02,
+            #     scale_max=0.04,
+            #     std_min=0.1,
+            #     std_max=0.6,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.9,
+            #     device=self.device,
+            # ),
             self.resolution_augmentation(),
             self.intensity_normalization,
         )
@@ -432,8 +399,17 @@ class SynthOrSelectImage(DefaultSynth):
                 ],
                 prob=(0.9, 0.1),
             ),
-            # Transform to output FOV
-            self.image_deformation,
+            self.image_deformation, # Transform to output FOV
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.02,
+            #     scale_max=0.04,
+            #     std_min=0.1,
+            #     std_max=0.6,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.9,
+            #     device=self.device,
+            # ),
             self.resolution_augmentation(),
             self.intensity_normalization,
         )
@@ -502,6 +478,11 @@ class XSubSynth(DefaultSynth):
             available_images=Pipeline(
                 SelectImage(),
                 ExtractDictKeys(),
+                unpack_inputs=False,
+            ),
+            selectable_images = Pipeline(
+                SelectState("available_images"),
+                Intersection(self.config.alternative_images),
                 unpack_inputs=False,
             ),
             # the size of the input image(s)
@@ -591,6 +572,34 @@ class XSubSynth(DefaultSynth):
             ),
         )
 
+    def build_image(self):
+        """No intensity augmentation."""
+
+        return Pipeline(
+            # Select one of the available (valid) images
+            PipelineModule(
+                SelectImage,
+                PipelineModule(
+                    RandomChoice,
+                    # equal probability of selecting each image
+                    SelectState("selectable_images"),
+                ),
+            ),
+            self.image_deformation, # Transform to output FOV
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.02,
+            #     scale_max=0.04,
+            #     std_min=0.1,
+            #     std_max=0.6,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.9,
+            #     device=self.device,
+            # ),
+            self.resolution_augmentation(),
+            self.intensity_normalization,
+        )
+
     def build_output(self):
         return dict(
             t1w=Pipeline(
@@ -635,3 +644,7 @@ class XSubSynth(DefaultSynth):
                 skip_on_InputSelectorError=True,
             ),
         )
+
+class XSubSynthIso(XSubSynth):
+    def resolution_augmentation(self):
+        return IdentityTransform()
