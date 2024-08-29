@@ -189,6 +189,8 @@ class DefaultSynth(SynthBuilder):
                 mu_scale=200.0,
                 sigma_offset=0.0,
                 sigma_scale=10.0,
+                pv_sigma=0.5,
+                pv_tail_length=2.0,
                 photo_mode=self.config.photo_mode,
                 min_cortical_contrast=25.0,
                 device=self.device,
@@ -285,11 +287,16 @@ class OnlySynth(DefaultSynth):
         self.inv_nonlinear_transform = IdentityTransform()
 
 
+class OnlySynthIso(OnlySynth):
+    def resolution_augmentation(self):
+        return IdentityTransform()
+
 class OnlySelect(OnlySynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
             - selection of an image as the input image for training
+            - resolution augmentation from DefaultSynth
 
         and thus *no* spatial augmentation (only extracting a particular FOV).
         """
@@ -334,11 +341,6 @@ class OnlySelect(OnlySynth):
         )
 
 
-class OnlySynthIso(OnlySynth):
-    def resolution_augmentation(self):
-        return IdentityTransform()
-
-
 class OnlySelectIso(OnlySelect):
     def resolution_augmentation(self):
         return IdentityTransform()
@@ -378,6 +380,8 @@ class SynthOrSelectImage(DefaultSynth):
                             mu_scale=200.0,
                             sigma_offset=0.0,
                             sigma_scale=10.0,
+                            pv_sigma=0.5,
+                            pv_tail_length=2.0,
                             photo_mode=self.config.photo_mode,
                             min_cortical_contrast=25.0,
                             device=self.device,
