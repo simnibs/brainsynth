@@ -66,6 +66,8 @@ Images = namedtuple(
         "rw_dist_map",
         "t1w",
         "t1w_mask",
+        "t1w_areg_mni",
+        "t1w_areg_mni_mask",
         "t2w",
         "t2w_mask",
         "ct",
@@ -114,7 +116,7 @@ class ImageSettings:
         self.generation_labels = GenerationLabels(
             n_labels=256,
             label_range=(0, 100),  # the actual labels; the rest are some mix of these
-            kmeans=(13, 14, 15, 16, 17), # (12, 13, 14, 15), #
+            kmeans=(12, 13, 14, 15, 16, 17, 18), # (12, 13, 14, 15), #
             lesion=1,
             white=2,
             gray=3,
@@ -148,6 +150,9 @@ class ImageSettings:
             ),
             t1w=ImageData("T1w.nii", torch.float, defacingmask="t1w_mask"),
             t1w_mask=ImageData("T1w.defacingmask.nii", torch.bool),
+            # t1w affinely registered to MNI152
+            t1w_areg_mni=ImageData("T1w.areg-mni.nii", torch.float, defacingmask="t1w_areg_mni_mask"),
+            t1w_areg_mni_mask=ImageData("T1w.areg-mni.defacingmask.nii", torch.bool),
             t2w=ImageData("T2w.nii", torch.float, defacingmask="t2w_mask"),
             t2w_mask=ImageData("T2w.defacingmask.nii", torch.bool),
         )
@@ -168,6 +173,7 @@ class ImageSettings:
             "rp_dist_map",
             "rw_dist_map",
             "t1w",
+            "t1w_areg_mni",
         ]
 
 
