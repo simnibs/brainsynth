@@ -7,33 +7,7 @@ from brainsynth.transforms.base import BaseTransform, RandomizableTransform
 from brainsynth.transforms import resolution_sampler
 from brainsynth.transforms.filters import GaussianSmooth
 
-import functools
-
-def function_recursion_dict(func):
-    @functools.wraps(func)
-    def wrapper(x):
-        if isinstance(x, dict):
-            return {k:wrapper(v) for k,v in x.items()}
-        else:
-            return func(x)
-    return wrapper
-
-
-def method_recursion_dict(func):
-    @functools.wraps(func)
-    def wrapper(self, x):
-        if isinstance(x, dict):
-            return {k:wrapper(self, v) for k,v in x.items()}
-        else:
-            return func(self, x)
-    return wrapper
-
-
-def CWHD_to_WHDC(x, as_contiguous: bool = False):
-    out = x.permute((1, 2, 3, 0))
-    out = out.contiguous() if as_contiguous else out
-    return out
-
+from brainsynth.transforms.utilities import channel_last, method_recursion_dict
 
 class SpatialCropParameters(BaseTransform):
     def __init__(
@@ -255,6 +229,54 @@ class RandLinearTransform(RandomizableTransform):
             return grid
 
 
+class ScaleAndSquare(BaseTransform):
+    def __init__(
+        self,
+        grid: torch.Tensor,
+        out_size: torch.Size | torch.Tensor,
+        n_steps: int = 8,
+        device: None | torch.device = None,
+    ) -> None:
+        super().__init__(device)
+        self.grid = grid
+        self.out_size = out_size
+        assert n_steps >= 0
+        self.n_steps = n_steps
+
+
+    def apply(self, field, n_steps: int):
+        """Scale and square for matrix exponentiation.
+
+        Parameters
+        ----------
+        field : _type_
+            _description_
+        n_steps : _type_
+            _description_
+
+        Returns
+        -------
+        _type_
+            _description_
+
+        References
+        ----------
+        Ashburner (2007). A fast diffeomorphic image registration algorithm.
+        Arsigny (2006). A Log-Euclidean Framework for Statistics on
+            Diffeomorphisms.
+        """
+        if n_steps == 0:
+            return field
+        elif n_steps > 0:
+            resample = GridSample(self.grid + channel_last(field), self.out_size)
+            field = field + resample(field)
+            return self.apply(field, n_steps - 1)
+        else:
+            raise ValueError(f"`n_steps` must be greater than or equal to zero (got {n_steps})")
+
+    def forward(self, field):
+        return self.apply(field, self.n_steps)
+
 class RandNonlinearTransform(RandomizableTransform):
     def __init__(
         self,
@@ -315,58 +337,32 @@ class RandNonlinearTransform(RandomizableTransform):
             V[1] = 0
 
         if exponentiate_field:
+            self.sas = ScaleAndSquare(self.grid, self.out_size)
+
             # this is slow on the CPU
             steplength = 1.0 / (2.0**scale_and_square_steps)
 
             # forward integration
             U = V * steplength
-            U = self.scale_and_square(U, self.scale_and_square_steps)
+            # U = self.scale_and_square(U, self.scale_and_square_steps)
+            U = self.sas.apply(U, self.scale_and_square_steps)
 
             # backward integration
             U_inv = -V * steplength
-            U_inv = self.scale_and_square(U_inv, self.scale_and_square_steps)
+            # U_inv = self.scale_and_square(U_inv, self.scale_and_square_steps)
+            U_inv = self.sas.apply(U_inv, self.scale_and_square_steps)
+
 
             self.trans = dict(forward=U, backward=U_inv)
         else:
             self.trans = dict(forward=V)
 
-    def scale_and_square(self, field, n_steps):
-        """Scale and square for matrix exponentiation.
-
-        Parameters
-        ----------
-        field : _type_
-            _description_
-        n_steps : _type_
-            _description_
-
-        Returns
-        -------
-        _type_
-            _description_
-
-        References
-        ----------
-        Ashburner (2007). A fast diffeomorphic image registration algorithm.
-        Arsigny (2006). A Log-Euclidean Framework for Statistics on
-            Diffeomorphisms.
-        """
-        if n_steps == 0:
-            return field
-        else:
-            resample = GridSample(self.grid + self.channel_last(field), self.out_size)
-            field += resample(field)
-            return self.scale_and_square(field, n_steps - 1)
-
-    @staticmethod
-    def channel_last(x):
-        return x.permute((1, 2, 3, 0))
 
     def forward(self, grid, direction="forward"):
         if self.should_apply_transform():
             match direction:
                 case "forward":
-                    return grid + self.channel_last(self.trans[direction])
+                    return grid + channel_last(self.trans[direction])
                 case "backward":
                     sampler = GridSample(grid, self.out_size)
                     return grid + sampler(self.trans[direction]).squeeze().T
@@ -457,7 +453,7 @@ class XSubWarpImage(BaseTransform):
         mni_image_shape = s1_deform.shape[-3:]
 
         # MNI voxel coordinates
-        sampler = GridSample(CWHD_to_WHDC(s2_deform_backward), mni_image_shape)
+        sampler = GridSample(channel_last(s2_deform_backward), mni_image_shape)
         # S1 voxel coordinates
         grid = sampler(s1_deform)
 
@@ -477,7 +473,7 @@ class XSubWarpImage(BaseTransform):
 
         # The grid now contains the voxel coordinates in S1 corresponding to
         # each voxel in S2, i.e., we have a S1[vox] to S2[vox] mapping.
-        self.sampler = GridSample(CWHD_to_WHDC(grid), s1_size)
+        self.sampler = GridSample(channel_last(grid), s1_size)
 
     def forward(self, image):
         return self.sampler(image)
@@ -521,7 +517,7 @@ class XSubWarpSurface_v1(BaseTransform):
         mni_image_shape = s2_deform.shape[-3:]
 
         # MNI voxel coordinates
-        sampler = GridSample(CWHD_to_WHDC(s1_deform_backward), mni_image_shape)
+        sampler = GridSample(channel_last(s1_deform_backward), mni_image_shape)
         # The field now contains the voxel coordinates in S2 space corresponding
         # to each voxel in S1, i.e., we have a S2[vox] to S1[vox] mapping.
         # S2 voxel coordinates
@@ -787,7 +783,7 @@ class GridSample(BaseTransform):
         Parameters
         ----------
         grid : torch.Tensor
-            Grid of shape (V, 3) or (W, H, D, 3).
+            Grid of shape ([N, ]V, 3) or ([N, ]W, H, D, 3).
         size : None | torch.Tensor, optional
            Size of the image to be interpolated from (i.e., the size of the
            image used when calling GridSample). The grid is normalized by this
@@ -808,7 +804,7 @@ class GridSample(BaseTransform):
         self.assume_normalized = assume_normalized
 
         self.grid_ndim = len(self.grid.shape)
-        assert self.grid_ndim in {2, 4}
+        assert self.grid_ndim in {2, 3, 4, 5}
 
         # normalized grid
         if self.assume_normalized:
@@ -816,27 +812,38 @@ class GridSample(BaseTransform):
         else:
             self.norm_grid = GridNormalization(self.size, device=grid.device)(grid)
 
-        if self.grid_ndim == 2:
-            self.norm_grid = self.norm_grid[None, :, None, None]  # 1,W,1,1,3
-        elif self.grid_ndim == 4:
-            self.norm_grid = self.norm_grid[None]  # 1,W,H,D,3
+        match self.grid_ndim:
+            case 2:
+                self.norm_grid = self.norm_grid[None, :, None, None]  # 1,W,1,1,3
+            case 3:
+                # includes batch dim
+                self.norm_grid = self.norm_grid[:, :, None, None]  # 1,W,1,1,3
+            case 4:
+                self.norm_grid = self.norm_grid[None]  # 1,W,H,D,3
+            case 5:
+                # includes batch dim so assume it is OK
+                pass # N,W,H,D,3
 
     def forward(self, image, padding_mode="zeros"):
         """_summary_
 
+        image : (1, 3, ...) (2, 3, ...)
+        grid: (..., 3), (1, ..., 3), (2, ..., 3)
+        grid: (V, 3), (2, V, 3)
+
         Parameters
         ----------
         image : _type_
-            Image to interpolate from. The dimensions are (C, H, W, D) where
-            (H, W, D) should match the spatial size provided at initialization
-            (if any).
+            Image to interpolate from. The dimensions are ([N, ]C, H, W, D)
+            where (H, W, D) should match the spatial size provided at
+            initialization (if any).
 
         Returns
         -------
         _type_
             _description_
         """
-        # image : (C, W, H, D)
+        # image : ([N, ]C, W, H, D)
         # grid  : (V, 3) or (WW, HH, DD, 3)
         if self.grid is None:
             return image
@@ -846,8 +853,8 @@ class GridSample(BaseTransform):
                 self.size
             ), f"Expected image with spatial dimensions {self.size} but got {image_size}."
 
-        image_ndim = len(image.shape)
-        assert image_ndim in {3, 4}
+
+        assert (image_ndim := len(image.shape)) in {3, 4, 5}
 
         # image
         # [n,c,]x,y,z -> n,c,z,y,x (!)
@@ -855,6 +862,8 @@ class GridSample(BaseTransform):
             image = image[None, None]
         elif image_ndim == 4:
             image = image[None]
+        elif image_ndim == 5:
+            pass # already has batch dim
         image = image.transpose(2, 4)  # NOTE xyz -> zyx (!)
 
         # NOTE `sample` has original xyz ordering! (N,C,W,H,D)
@@ -877,7 +886,7 @@ class GridSample(BaseTransform):
                 padding_mode=padding_mode,
             ).to(image.dtype)
 
-        if self.grid_ndim == 2:
+        if self.grid_ndim in {2, 3}:
             sample.squeeze_((3, 4)) # remove H,D dims
         sample.squeeze_(0) # remove batch dim if not present
 
