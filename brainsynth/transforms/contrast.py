@@ -2,8 +2,10 @@ import torch
 
 from brainsynth.constants import IMAGE
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
+from brainsynth.transforms.filters import GaussianSmooth
 
 gl = IMAGE.generation_labels
+
 class SynthesizeIntensityImage(BaseTransform):
     def __init__(
         self,
@@ -11,6 +13,8 @@ class SynthesizeIntensityImage(BaseTransform):
         mu_scale: float,
         sigma_offset: float,
         sigma_scale: float,
+        pv_sigma: float | list[float],
+        pv_tail_length: float,
         photo_mode: bool = False,
         min_cortical_contrast: float = 25.0,
         device: None | torch.device = None,
@@ -20,6 +24,13 @@ class SynthesizeIntensityImage(BaseTransform):
         self.min_cortical_contrast = min_cortical_contrast
 
         self.sample_gaussians(mu_offset, mu_scale, sigma_offset, sigma_scale)
+
+        if (isinstance(pv_sigma, float) and (pv_sigma > 0.0)) or (
+            isinstance(pv_sigma, (list, tuple)) and any(i > 0.0 for i in pv_sigma)
+        ):
+            self.gaussian_blur = GaussianSmooth(pv_sigma, pv_tail_length, device=self.device)
+        else:
+            self.gaussian_blur = None
 
     def sample_gaussians(self, mu_offset, mu_scale, sigma_offset, sigma_scale):
         # Generate Gaussians
@@ -37,7 +48,7 @@ class SynthesizeIntensityImage(BaseTransform):
         sigma[slc] *= scale_factor
 
         # set the background to zero every once in a while (or always in photo mode)
-        if self.photo_mode : # or torch.rand(1, device=self.device) < 0.5:
+        if self.photo_mode:  # or torch.rand(1, device=self.device) < 0.5:
             mu[0] = 0
 
         # Ensure contrast
@@ -61,15 +72,25 @@ class SynthesizeIntensityImage(BaseTransform):
         # mix parameters
         frac = torch.linspace(0, 1, 50, device=self.device)
 
-        mu[gl.pv.lesion:gl.pv.white] = mu[gl.lesion] + frac * (mu[gl.white]-mu[gl.lesion])
-        mu[gl.pv.white:gl.pv.gray]   = mu[gl.white]  + frac * (mu[gl.gray]-mu[gl.white])
-        mu[gl.pv.gray:gl.pv.csf]     = mu[gl.gray]   + frac * (mu[gl.csf]-mu[gl.gray])
-        mu[gl.pv.csf]                = mu[gl.csf]
+        mu[gl.pv.lesion : gl.pv.white] = mu[gl.lesion] + frac * (
+            mu[gl.white] - mu[gl.lesion]
+        )
+        mu[gl.pv.white : gl.pv.gray] = mu[gl.white] + frac * (
+            mu[gl.gray] - mu[gl.white]
+        )
+        mu[gl.pv.gray : gl.pv.csf] = mu[gl.gray] + frac * (mu[gl.csf] - mu[gl.gray])
+        mu[gl.pv.csf] = mu[gl.csf]
 
-        sigma[gl.pv.lesion:gl.pv.white] = sigma[gl.lesion] + frac * (sigma[gl.white]-sigma[gl.lesion])
-        sigma[gl.pv.white:gl.pv.gray]   = sigma[gl.white]  + frac * (sigma[gl.gray]-sigma[gl.white])
-        sigma[gl.pv.gray:gl.pv.csf]     = sigma[gl.gray]   + frac * (sigma[gl.csf]-sigma[gl.gray])
-        sigma[gl.pv.csf]                = sigma[gl.csf]
+        sigma[gl.pv.lesion : gl.pv.white] = sigma[gl.lesion] + frac * (
+            sigma[gl.white] - sigma[gl.lesion]
+        )
+        sigma[gl.pv.white : gl.pv.gray] = sigma[gl.white] + frac * (
+            sigma[gl.gray] - sigma[gl.white]
+        )
+        sigma[gl.pv.gray : gl.pv.csf] = sigma[gl.gray] + frac * (
+            sigma[gl.csf] - sigma[gl.gray]
+        )
+        sigma[gl.pv.csf] = sigma[gl.csf]
 
         # mu[100:150] = mu[1] + frac * (mu[2]-mu[1])
         # mu[150:200] = mu[2] + frac * (mu[3]-mu[2])
@@ -92,15 +113,28 @@ class SynthesizeIntensityImage(BaseTransform):
         # SYN = a + b * c
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
-        return self.mu[label] + self.sigma[label] * torch.randn(
-            label.shape, device=self.device
-        )
+
+        img = self.mu[label]
+        if self.gaussian_blur is not None:
+            img_blur = self.gaussian_blur(img)
+            # we explicitly model PV in some areas so use that instead of the
+            # blurred image.
+            explicit_pv_mask = (label >= gl.pv.lesion) & (label <= gl.pv.csf)
+            img_blur[explicit_pv_mask] = img[explicit_pv_mask]
+        else:
+            img_blur = img
+        img_blur += self.sigma[label] * torch.randn(label.shape, device=self.device)
+        return img_blur
+        # return self.mu[label] + self.sigma[label] * torch.randn(
+        #     label.shape, device=self.device
+        # )
 
     def forward(self, label):
         return self.sample_image(label)
         # image = self.sample_image(label)
         # image[image < lut.Unknown] = lut.Unknown # clip
         # return image
+
 
 class RandMaskRemove(RandomizableTransform):
     def __init__(
@@ -221,8 +255,8 @@ class RandBiasfield(RandomizableTransform):
 
         # Resize
         self.biasfield = torch.nn.functional.interpolate(
-            input = bf_small[None, None], # add batch, channel dims
-            size = tuple(self.size),
+            input=bf_small[None, None],  # add batch, channel dims
+            size=tuple(self.size),
             **self.interpolate_kwargs,
         )[
             0
