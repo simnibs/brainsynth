@@ -42,11 +42,12 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         subjects: None | str | list | tuple = None,
         synthesizer: None | Synthesizer | SynthesizerConfig = None,
         images: None | list | tuple = None,
+        load_mask: bool = False,
         ds_structure: str = "flat",
         target_surface_resolution: None | int = 6,
         target_surface_hemispheres: None | list | str | tuple = "both",
         # initial_surface_type: str = "template",  # or prediction
-        initial_surface_resolution: int = 0,
+        initial_surface_resolution: None | int = 0,
         xdataset: None | XDatasetConfig = None, # or XDataset
     ):
         """
@@ -87,7 +88,11 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             subjects to use. If tuple/list, it is a list of subject names.
         synthesizer:
             Configured synthesizer
+        load_mask : bool
+            For each image, if it has an associated mask (e.g., defacing mask),
+            load this as well.
         """
+        self.load_mask = load_mask
         self._initialize_io_settings(root_dir, name, ds_structure, subjects)
         self._initialize_image_settings(images)
         self._initialize_target_surface_settings(
@@ -242,7 +247,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             if (fi := self.get_image_filename(subject, img.filename)).exists():
                 images[image] = _load_image(fi, img.dtype, img.transform)
                 # If the image has an associated defacing mask, load it
-                if img.defacingmask is not None:
+                if self.load_mask and img.defacingmask is not None:
                     mask = getattr(IMAGE.images, img.defacingmask)
                     if (fm := self.get_image_filename(subject, mask.filename)).exists():
                         images[img.defacingmask] = _load_image(fm, mask.dtype)
@@ -278,13 +283,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         }
 
     def _load_initial_surfaces(self, subject, hemi):
-        r = SURFACE.resolutions[self.initial_surface_resolution]
-        return {
-            h: torch.load(
-                self.get_surface_filename(subject, SURFACE.files.template[h, r])
-            )
-            for h in hemi
-        }
+        if self.initial_surface_resolution is None:
+            return {}
+        else:
+            r = SURFACE.resolutions[self.initial_surface_resolution]
+            return {
+                h: torch.load(
+                    self.get_surface_filename(subject, SURFACE.files.template[h, r])
+                )
+                for h in hemi
+            }
 
     def __repr__(self):
         return f"{self.__class__.__name__} {self.name} in {self.ds_dir/self.name}"
@@ -398,10 +406,17 @@ def make_dataloader(
         )
     return torch.utils.data.DataLoader(dataset, **kwargs)
 
-
+def concatenate_dataset(
+    dataset_config: DatasetConfig,
+    dataset_class: SynthesizedDataset = SynthesizedDataset,
+):
+    return torch.utils.data.ConcatDataset(
+        [dataset_class(**kw) for kw in dataset_config.dataset_kwargs.values()]
+    )
 def setup_dataloader(
     dataset_config: DatasetConfig,
     dataloader_kwargs: dict | None = None,
+    dataset_class: SynthesizedDataset  = SynthesizedDataset,
 ):
     """Construct a dataloader by first constructing datasets from `dataset_kwargs`
     and concatenating them.
@@ -414,104 +429,14 @@ def setup_dataloader(
     dataloader_kwargs:
         Kwargs passed to dataloader constructor.
     """
-    dataloader_kwargs = dataloader_kwargs or {}
-
     # Individual datasets
-    concat_ds = torch.utils.data.ConcatDataset(
-        [SynthesizedDataset(**kw) for kw in dataset_config.dataset_kwargs.values()]
-    )
+    concat_ds = concatenate_dataset(dataset_config, dataset_class)
+
     # original datasets are in
     # dataloader.dataset.dataset.datasets
     #                        subset  concat  list of original ds
+    dataloader_kwargs = dataloader_kwargs or {}
     return make_dataloader(concat_ds, **dataloader_kwargs)
-
-
-# def get_dataloader_concatenated_and_split(
-#     base_dir,
-#     datasets,
-#     optional_images,
-#     dataset_kwargs,
-#     dataset_splits,
-#     dataloader_kwargs,
-#     split_rng_seed=None,
-# ):
-#     """Construct a dataloader by concatenating `datasets` (e.g., ds0, ds1) and
-#     splitting according to `dataset_splits` (e.g., train, validation).
-
-#     Parameters
-#     ----------
-#     base_dir :
-#         Base directory containing datasets. A dataset is found in
-#         base_dir / dataset_name.
-#     datasets :
-#         List of dataset names.
-#     optional_images :
-#         Key is the name of the dataset and value is a list/tuple of the
-#         additional contrasts that this dataset contains and which is to be
-#         loaded.
-#     dataset_kwargs :
-#         Kwargs passed to dataset constructor.
-#     dataset_splits: dict
-#         Dictionary where keys are split names and values are split fractions.
-#         Values should sum to one.
-#     dataloader_kwargs:
-#         Kwargs passed to dataloader constructor.
-#     split_rng_seed:
-#         Seed for dataset splitting.
-#     """
-#     base_dir = Path(base_dir)
-
-#     # Individual datasets
-#     datasets = [
-#         CroppedDataset(
-#             base_dir / ds,
-#             # load_dataset_subjects(base_dir, ds),
-#             optional_images=optional_images[ds],
-#             dataset_id=ds,
-#             return_dataset_id=True,
-#             **dataset_kwargs,
-#         )
-#         for ds in datasets
-#     ]
-#     # Concatenated
-#     dataset = torch.utils.data.ConcatDataset(datasets)
-#     # Split in train, validation, etc.
-#     dataset = split_dataset(dataset, dataset_splits, split_rng_seed)
-#     dataloader = {
-#         k: make_dataloader(v, **dataloader_kwargs) for k, v in dataset.items()
-#     }
-
-#     # original datasets are in
-#     # dataloader["split_id"].dataset.dataset.datasets
-#     #                        subset  concat  list of original ds
-#     return dataloader
-
-
-# def split_dataset(
-#     dataset: torch.utils.data.Dataset, splits: dict, rng_seed: None | int = None
-# ):
-#     """_summary_
-
-#     Parameters
-#     ----------
-#     dataset : Dataset
-#         _description_
-#     splits : dict
-#         _description_
-#     rng_seed : None | int, optional
-#         _description_, by default None
-
-#     Returns
-#     -------
-#     dict
-#         Dictionary of subsets of dataset (.indices contains indices of the data
-#         in a given subset).
-#     """
-#     names = list(splits.keys())
-#     fractions = list(splits.values())
-#     if rng_seed is not None:
-#         torch.manual_seed(rng_seed)
-#     return dict(zip(names, torch.utils.data.random_split(dataset, fractions)))
 
 
 def write_dataset_subjects(
@@ -519,6 +444,8 @@ def write_dataset_subjects(
     out_dir,
     subsets: None | dict = None,
     exclude: None | dict = None,
+    pattern: str = "*",
+    suffix: None | str = None,
     rng_seed: int | None = None,
 ):
     """Write a file called `{dataset}.txt` for each dataset in `data_dir`.
@@ -553,7 +480,20 @@ def write_dataset_subjects(
         data_dir = "/mnt/projects/CORTECH/nobackup/training_data"
         out_dir = "/mnt/projects/CORTECH/nobackup/training_data_subjects"
         subsets = dict(train=0.8, test=0.1, validation=0.1)
+
         write_dataset_subjects(data_dir, out_dir, subsets)
+
+        pattern = "*FLAIR.nii"
+        suffix = "flair"
+
+        write_dataset_subjects(
+            data_dir,
+            out_dir,
+            subsets,
+            pattern=pattern,
+            suffix=suffix,
+        )
+
 
     Parameters
     ----------
@@ -576,7 +516,7 @@ def write_dataset_subjects(
 
     subjects = {}
     prev_sub = None
-    for i in sorted(data_dir.glob("*")):
+    for i in sorted(data_dir.glob(pattern)):
         ds, sub, *_ = i.name.split(".")
         if prev_sub == sub:
             continue
@@ -587,14 +527,19 @@ def write_dataset_subjects(
                 subjects[ds] = [sub]
         prev_sub = sub
 
-    for ds, subs in subjects.items():
-        np.savetxt(out_dir / f"{ds}.txt", subs, fmt="%s")
+    # for ds, subs in subjects.items():
+    #     np.savetxt(out_dir / f"{ds}.txt", subs, fmt="%s")
 
     if subsets:
         for ds, subs in subjects.items():
             arr = make_subsets(subs, subsets, rng_seed)
             for name, subarr in zip(subsets, arr):
-                np.savetxt(out_dir / f"{ds}.{name}.txt", subarr, fmt="%s")
+                parts = [ds, name]
+                if suffix is not None:
+                    parts += [suffix] if isinstance(suffix, str) else suffix
+                # print(out_dir / (".".join(parts) + ".txt"))
+                np.savetxt(out_dir / (".".join(parts) + ".txt"), subarr, fmt="%s")
+
 
 
 def make_subsets(subs, subsets: dict, rng_seed: int | None = None):
@@ -608,55 +553,3 @@ def make_subsets(subs, subsets: dict, rng_seed: int | None = None):
     n = len(subs)
     index = [np.round(n * f).astype(int) for f in fractions[:-1]]
     return tuple(np.sort(i) for i in np.split(subs, index))
-
-
-# def write_dataset_subjects(
-#     data_dir,
-#     dataset,
-#     subsets: dict | None = None,
-#     exclude: list | tuple | None = None,
-#     rng_seed: int | None = None,
-# ):
-#     """Write a file called `{dataset}.txt` in `data_dir`. Dataset is the name
-#     of a subdirectory of `data_dir` containing the data for this dataset. E.g.,
-
-#         /my/data_dir/
-#             dataset0/
-#                 sub-01
-#                 sub-02
-#             dataset1/
-#                 sub-01
-#                 sub-02
-
-#     and
-
-#         write_dataset_subjects(data_dir, dataset0)
-#         write_dataset_subjects(data_dir, dataset1)
-
-#     will create the following text files
-
-#         /my/data_dir/
-#             subjects_dataset0.txt
-#             subjects_dataset1.txt
-
-#     Parameters
-#     ----------
-#     exclude :
-#         Names of subjects to exclude.
-
-#     """
-#     data_dir = Path(data_dir)
-#     p = data_dir / dataset
-#     exclude = exclude or []
-#     subjects = [i.name for i in sorted(p.glob("*")) if i not in exclude]
-
-#     np.savetxt(data_dir / filename_subjects(dataset), subjects, fmt="%s")
-
-#     if subsets:
-#         for ds, subs in subjects.items():
-#             names, arr =  make_subsets(subs, subsets, rng_seed)
-
-#             for name, subarr in zip(names, arr):
-#                 np.savetxt(
-#                     out_dir / filename_subjects_subset(dataset, name), subarr, fmt="%s"
-#                 )

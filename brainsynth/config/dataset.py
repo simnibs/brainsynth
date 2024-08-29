@@ -70,10 +70,11 @@ class DatasetConfig:
         synthesizer=None,
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
+        load_mask: bool = False,
         ds_structure="flat",
         target_surface_resolution: int | None = 5,
-        target_surface_hemispheres="both",
-        initial_surface_resolution=0,
+        target_surface_hemispheres: None | str = "both",
+        initial_surface_resolution: int | None = 0,
         xdataset: None | XDatasetConfig = None,
     ):
         known_datasets = (
@@ -92,7 +93,7 @@ class DatasetConfig:
 
         valid_images = {
             "ABIDE":        IMAGE.default_images,
-            "ADHD200":      IMAGE.default_images + ["flair"],
+            "ADHD200":      IMAGE.default_images,
             "ADNI3":        IMAGE.default_images + ["flair"],
             "AIBL":         IMAGE.default_images + ["flair"],
             "Buckner40":    IMAGE.default_images,
@@ -104,7 +105,7 @@ class DatasetConfig:
             "OASIS3":       IMAGE.default_images + ["ct", "t2w"],
         }
         datasets = datasets or known_datasets
-        images = images or ("generation_labels", )
+        images = ("generation_labels", ) if images is None else images
         use_images = {}
         for ds in datasets:
             use_images[ds] = []
@@ -130,6 +131,7 @@ class DatasetConfig:
                 subjects=subjects_subset_str(subject_dir, ds, subject_subset),
                 synthesizer=synthesizer,
                 images=use_images[ds],
+                load_mask = load_mask,
                 ds_structure=ds_structure,
                 target_surface_resolution=target_surface_resolution,
                 target_surface_hemispheres=target_surface_hemispheres,
