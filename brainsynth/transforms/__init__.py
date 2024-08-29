@@ -11,6 +11,7 @@ from .contrast import (
     RandMaskRemove,
     SynthesizeIntensityImage,
 )
+from .filters import GaussianSmooth
 from .spatial import (
     BoundingBoxCorner,
     BoundingBoxSize,

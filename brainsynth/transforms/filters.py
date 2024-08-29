@@ -11,6 +11,9 @@ class GaussianSmooth(BaseTransform):
         spatial_dims: int = 3,
         device: None | torch.device = None,
     ) -> None:
+        """Gaussian smoothing using separable filters (independent smoothing of
+        each dimension).
+        """
         super().__init__(device)
 
         self.spatial_dims = spatial_dims
