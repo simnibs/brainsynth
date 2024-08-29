@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1                  # Relevant when program implements MPI (multi system/distributed parallelism)
 #SBATCH --cpus-per-task=4           # Relevant when program implements MP (single system parallelism, e.g., OpenMP, TBB)
 #SBATCH --mem=4G                   # Job memory request
-#SBATCH --array=1-10%50           # or 1,2,4,5,9 ; access as $SLURM_ARRAY_TASK_ID 5279
+#SBATCH --array=10-5279%100           # or 1,2,4,5,9 ; access as $SLURM_ARRAY_TASK_ID 5279
 
 echo "Job Information"
 echo
