@@ -52,41 +52,51 @@ if __name__ == "__main__":
     ras2mni = np.loadtxt(ds.ds_dir / f"{ds.name}.{subject}.mni152_affine_backward.txt")
 
     # image
-    t1w = nib.load(ds.ds_dir / f"{ds.name}.{subject}.T1w.nii")
-    vox2ras = t1w.affine
-    t1w_trans = nib.Nifti1Image(
-        t1w.get_fdata().squeeze().astype(t1w.get_data_dtype()),
+    # t1w = nib.load(ds.ds_dir / f"{ds.name}.{subject}.T1w.nii")
+    # vox2ras = t1w.affine
+    # t1w_trans = nib.Nifti1Image(
+    #     t1w.get_fdata().squeeze().astype(t1w.get_data_dtype()),
+    #     ras2mni @ vox2ras
+    # )
+    # out = nibabel.processing.resample_from_to(t1w_trans, MNI152)
+    # out.to_filename(out_dir / ".".join([ds.name, subject, "T1w.areg-mni", "nii"]))
+
+    # segmentation
+    seg = nib.load(ds.ds_dir / f"{ds.name}.{subject}.brainseg_with_extracerebral.nii")
+    vox2ras = seg.affine
+    seg_trans = nib.Nifti1Image(
+        seg.get_fdata().squeeze().astype(seg.get_data_dtype()),
         ras2mni @ vox2ras
     )
-    out = nibabel.processing.resample_from_to(t1w_trans, MNI152)
-    out.to_filename(out_dir / ".".join([ds.name, subject, "T1w.areg-mni", "nii"]))
+    out = nibabel.processing.resample_from_to(seg_trans, MNI152, order=0)
+    out.to_filename(out_dir / ".".join([ds.name, subject, "brainseg_with_extracerebral", "nii"]))
 
-    try:
-        t1w_mask = nib.load(ds.ds_dir / f"{ds.name}.{subject}.T1w.defacingmask.nii")
-        t1w_mask_trans = nib.Nifti1Image(
-            t1w_mask.get_fdata().squeeze().astype(t1w_mask.get_data_dtype()),
-            ras2mni @ vox2ras
-        )
-        out = nibabel.processing.resample_from_to(t1w_mask_trans, MNI152)
-        out.to_filename(out_dir / ".".join([ds.name, subject, "T1w.areg-mni.defacingmask", "nii"]))
-    except FileNotFoundError:
-        pass
+    # try:
+    #     t1w_mask = nib.load(ds.ds_dir / f"{ds.name}.{subject}.T1w.defacingmask.nii")
+    #     t1w_mask_trans = nib.Nifti1Image(
+    #         t1w_mask.get_fdata().squeeze().astype(t1w_mask.get_data_dtype()),
+    #         ras2mni @ vox2ras
+    #     )
+    #     out = nibabel.processing.resample_from_to(t1w_mask_trans, MNI152)
+    #     out.to_filename(out_dir / ".".join([ds.name, subject, "T1w.areg-mni.defacingmask", "nii"]))
+    # except FileNotFoundError:
+    #     pass
 
     # surface
 
-    affine = torch.tensor(mni_ras2vox @ ras2mni @ vox2ras).float()
+    # affine = torch.tensor(mni_ras2vox @ ras2mni @ vox2ras).float()
 
-    d = ".".join([ds.name, subject, "surf_dir"])
-    if not (out_dir / d).exists():
-        (out_dir/d).mkdir()
+    # d = ".".join([ds.name, subject, "surf_dir"])
+    # if not (out_dir / d).exists():
+    #     (out_dir/d).mkdir()
 
-    for h in ["lh", "rh"]:
-        for s in ["white", "pial"]:
-            name = ".".join([h,s,"5","target","pt"])
+    # for h in ["lh", "rh"]:
+    #     for s in ["white", "pial"]:
+    #         name = ".".join([h,s,"5","target","pt"])
 
-            data = torch.load(ds.ds_dir / d / name)
-            out = data @ affine[:3,:3].T + affine[:3,3]
-            torch.save(out, out_dir / d / name)
+    #         data = torch.load(ds.ds_dir / d / name)
+    #         out = data @ affine[:3,:3].T + affine[:3,3]
+    #         torch.save(out, out_dir / d / name)
 
     # for ds in concat_ds.datasets:
     #     print(ds.name)
