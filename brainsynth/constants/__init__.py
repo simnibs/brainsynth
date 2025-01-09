@@ -9,6 +9,8 @@ import torch
 # NNeutralLabels = namedtuple("NNeutralLabels", ("incl_csf", "excl_csf", "wmgm"))
 # n_neutral_labels = NNeutralLabels(incl_csf=7, excl_csf=6, wmgm=1)
 
+hemispheres = ("lh", "rh")
+
 # Mapped inputs
 
 MappedInputKeys = namedtuple(
@@ -55,6 +57,7 @@ Images = namedtuple(
         "brainseg",
         "brainseg_with_extracerebral",
         "generation_labels",
+        "generation_labels_dist",
         "mni_reg_x",
         "mni_reg_y",
         "mni_reg_z",
@@ -116,7 +119,7 @@ class ImageSettings:
         self.generation_labels = GenerationLabels(
             n_labels=256,
             label_range=(0, 100),  # the actual labels; the rest are some mix of these
-            kmeans=(12, 13, 14, 15, 16, 17, 18), # (12, 13, 14, 15), #
+            kmeans=(12, 13, 14, 15, 16, 17, 18, 19), # (12, 13, 14, 15), #
             lesion=1,
             white=2,
             gray=3,
@@ -135,6 +138,7 @@ class ImageSettings:
             flair=ImageData("FLAIR.nii", torch.float, defacingmask="flair_mask"),
             flair_mask=ImageData("FLAIR.defacingmask.nii", torch.float),
             generation_labels=ImageData("generation_labels.nii", torch.int32),
+            generation_labels_dist=ImageData("generation_labels_dist.nii", torch.int32),
             lp_dist_map=ImageData("lp_dist_map.nii", torch.float, t_dist_map),
             lw_dist_map=ImageData("lw_dist_map.nii", torch.float, t_dist_map),
             rp_dist_map=ImageData("rp_dist_map.nii", torch.float, t_dist_map),
@@ -163,6 +167,7 @@ class ImageSettings:
             "brainseg",
             "brainseg_with_extracerebral",
             "generation_labels",
+            "generation_labels_dist",
             "mni_reg_x",
             "mni_reg_y",
             "mni_reg_z",
@@ -182,21 +187,27 @@ class ImageSettings:
 # ---------------------------
 
 
-class SurfaceFiles:
-    def __init__(self, hemispheres, types, resolutions):
-        self.prediction = {}
-        self.target = {}
-        self.template = {}
-        self.decoupled_target = {}
+# class SurfaceFiles:
+#     def __init__(self, hemispheres, types, resolutions):
+#         self.template = make_surface_dict(hemispheres, None, resolutions, "template")
+#         self.template_niftyreg = make_surface_dict(hemispheres, None, resolutions, "template.niftyreg")
 
-        for h in hemispheres:
-            for r in resolutions:
-                for t in types:
-                    k = (h, t, r)
-                    self.prediction[k] = f"{h}.{t}.{r}.prediction.pt"
-                    self.target[k] = f"{h}.{t}.{r}.target.pt"
-                    self.decoupled_target[k] = f"{h}.{t}.{r}.target-decoupled.pt"
-                self.template[(h, r)] = f"{h}.{r}.template.pt"
+#         self.target = make_surface_dict(hemispheres, types, resolutions, "target")
+#         self.decoupled_target = make_surface_dict(hemispheres, types, resolutions, "target-decoupled")
+
+#         self.prediction = make_surface_dict(hemispheres, types, resolutions, "prediction")
+
+        # for h in hemispheres:
+        #     for r in resolutions:
+        #         for t in types:
+        #             k = (h, t, r)
+        #             self.prediction[k] = f"{h}.{t}.{r}.prediction.pt"
+        #             self.target[k] = f"{h}.{t}.{r}.target.pt"
+        #             self.decoupled_target[k] = f"{h}.{t}.{r}.target-decoupled.pt"
+        #         self.template[(h, r)] = f"{h}.{r}.template.pt"
+        #         self.template_niftyreg[(h, r)] = f"{h}.{r}.template.niftyreg.pt"
+        #         self.template_prediction_white[(h, r)] = f"{h}.white.{r}.prediction.pt"
+        #         self.template_prediction_pial[(h, r)] = f"{h}.pial.{r}.prediction.pt"
 
 
 class SurfaceSettings:
@@ -204,7 +215,28 @@ class SurfaceSettings:
         self.hemispheres: tuple[str, str] = ("lh", "rh")
         self.types: tuple = ("white", "pial")
         self.resolutions: tuple = (0, 1, 2, 3, 4, 5, 6)
-        self.files = SurfaceFiles(self.hemispheres, self.types, self.resolutions)
+        #self.files = SurfaceFiles(self.hemispheres, self.types, self.resolutions)
+
+    @staticmethod
+    def get_files(hemispheres, types, resolution, name, extension="pt"):
+
+        hemispheres = [hemispheres] if isinstance(hemispheres, str) else hemispheres
+
+        if isinstance(types, str):
+            types = [types]
+
+        remain = [extension]
+        remain = remain if name is None else [name] + remain
+        remain = remain if resolution is None else [str(resolution)] + remain
+
+        out = {}
+        for h in hemispheres:
+            if types is None:
+                out[h] = ".".join((h, *remain))
+            else:
+                for t in types:
+                    out[(h,t)] = ".".join((h, t, *remain))
+        return out
 
 
 IMAGE = ImageSettings()

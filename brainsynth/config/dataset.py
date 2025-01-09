@@ -2,7 +2,7 @@ from pathlib import Path
 
 from brainsynth.constants import IMAGE
 
-def subjects_subset_str(p, ds, subset=None):
+def subjects_subset_str(p: Path, ds: str, subset: None | str = None):
     if subset is None:
         return p / f"{ds}.txt"
     else:
@@ -67,15 +67,9 @@ class DatasetConfig:
         root_dir: Path | str,
         subject_dir: Path | str,
         subject_subset: None | str,
-        synthesizer=None,
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
-        load_mask: bool = False,
-        ds_structure="flat",
-        target_surface_resolution: int | None = 5,
-        target_surface_hemispheres: None | str = "both",
-        initial_surface_resolution: int | None = 0,
-        xdataset: None | XDatasetConfig = None,
+        **kwargs,
     ):
         known_datasets = (
             "ABIDE",
@@ -129,14 +123,8 @@ class DatasetConfig:
                 root_dir=root_dir,
                 name=ds,
                 subjects=subjects_subset_str(subject_dir, ds, subject_subset),
-                synthesizer=synthesizer,
                 images=use_images[ds],
-                load_mask = load_mask,
-                ds_structure=ds_structure,
-                target_surface_resolution=target_surface_resolution,
-                target_surface_hemispheres=target_surface_hemispheres,
-                initial_surface_resolution=initial_surface_resolution,
-                xdataset=xdataset,
+                **kwargs,
             )
             for ds in datasets
         }
