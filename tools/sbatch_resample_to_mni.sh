@@ -4,9 +4,9 @@
 #SBATCH --output=/mnt/scratch/personal/jesperdn/slurm_logs/%x_%A_%a.log          # A = master job id, a = task job id
 #SBATCH --nodes=1                   # Relevant when program implements MPI (multi system/distributed parallelism)
 #SBATCH --ntasks=1                  # Relevant when program implements MPI (multi system/distributed parallelism)
-#SBATCH --cpus-per-task=2          # Relevant when program implements MP (single system parallelism, e.g., OpenMP, TBB)
-#SBATCH --mem=4G                   # Job memory request
-#SBATCH --array=0-5278%100           # or 1,2,4,5,9 ; access as $SLURM_ARRAY_TASK_ID 5279
+#SBATCH --cpus-per-task=1          # Relevant when program implements MP (single system parallelism, e.g., OpenMP, TBB)
+#SBATCH --mem=2G                   # Job memory request
+#SBATCH --array=0-5278           # or 1,2,4,5,9 ; access as $SLURM_ARRAY_TASK_ID 5279
 
 
 echo "Job Information"
