@@ -35,7 +35,7 @@ class Synthesizer(torch.nn.Module):
         images: dict[str, torch.Tensor],
         surfaces: dict[str, dict[str, torch.Tensor]],
         initial_vertices: dict[str, torch.Tensor],
-        unpack = True,
+        unpack: bool = True,
     ):
         mapped_inputs = {
             mikeys.image: self.ensure_device(images),

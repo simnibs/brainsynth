@@ -1,18 +1,22 @@
+import inspect
 from typing import Type
 
 import torch
 
-from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice
+from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice, SwitchTransform
 from .contrast import (
     IntensityNormalization,
     RandBiasfield,
     RandBlendImages,
     RandGammaTransform,
     RandMaskRemove,
+    RandSaltAndPepperNoise,
+    SynthesizeFromMultivariateNormal,
     SynthesizeIntensityImage,
 )
 from .filters import GaussianSmooth
 from .spatial import (
+    AdjustAffineToSpatialCrop,
     BoundingBoxCorner,
     BoundingBoxSize,
     CenterFromString,
@@ -25,6 +29,7 @@ from .spatial import (
     RandLinearTransform,
     RandNonlinearTransform,
     RandResolution,
+    RandTranslationTransform,
     RestrictBoundingBox,
     SpatialCrop,
     SpatialCropParameters,
@@ -154,7 +159,12 @@ class PipelineModule:
             inp = inp()
         elif isinstance(inp, PipelineModule):
             # When a PipelineModule is used as (kw)arg, initialize
-            inp = inp(mapped_inputs)()
+            inp = inp(mapped_inputs)
+            # if the transform do not require any inputs when called, call it,
+            # otherwise just initialize it
+            if len(inspect.getfullargspec(inp.forward).args) == 1:
+                inp = inp()
+
         return inp
 
     def check_transform(

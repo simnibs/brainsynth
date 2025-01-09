@@ -61,6 +61,27 @@ class RandomChoice(BaseTransform):
         return self.choices[torch.multinomial(self.prob, 1)]
 
 
+class SwitchTransform(BaseTransform):
+    def __init__(
+        self,
+        *transforms,
+        prob: tuple | list | None = None,
+        device: None | torch.device = None,
+    ) -> None:
+        super().__init__(device)
+        n = len(transforms)
+        if prob is None:
+            self.prob = torch.full((n,), 1/n, device = device)
+        else:
+            self.prob = torch.tensor(prob, device=device)
+        assert self.prob.sum() == 1.0
+        assert len(transforms) == len(self.prob)
+        self.transforms = transforms
+
+    def forward(self, x):
+        return self.transforms[torch.multinomial(self.prob, 1)](x)
+
+
 class EnsureDevice(BaseTransform):
     def __init__(self, device: None | torch.device = None) -> None:
         super().__init__(device)

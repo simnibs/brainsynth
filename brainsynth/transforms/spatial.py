@@ -9,6 +9,7 @@ from brainsynth.transforms.filters import GaussianSmooth
 
 from brainsynth.transforms.utilities import channel_last, method_recursion_dict
 
+
 class SpatialCropParameters(BaseTransform):
     def __init__(
         self,
@@ -30,11 +31,11 @@ class SpatialCropParameters(BaseTransform):
         stop += size - (stop - start)
         return tuple((a.item(), b.item()) for a, b in zip(start, stop))
 
-    def forward(self, in_size: torch.Tensor):
+    def forward(self, in_size: torch.Size):
         # restrict slices to image size (i.e., these slices are sampled in the
         # original image)
         self.slices = tuple(
-            slice(max(s[0], 0), min(s[1], ins.item()))
+            slice(max(s[0], 0), min(s[1], ins))
             for s, ins in zip(self.raw_slices, in_size)
         )
 
@@ -51,23 +52,46 @@ class SpatialCropParameters(BaseTransform):
         # therefore
 
         self.pad = (
-            self.slices[2].start  - self.raw_slices[2][0],  # inferior
-            self.raw_slices[2][1] - self.slices[2].stop,    # superior
-            self.slices[1].start  - self.raw_slices[1][0],  # posterior
-            self.raw_slices[1][1] - self.slices[1].stop,    # anterior
-            self.slices[0].start  - self.raw_slices[0][0],  # left
-            self.raw_slices[0][1] - self.slices[0].stop,    # right
+            self.slices[2].start - self.raw_slices[2][0],  # inferior
+            self.raw_slices[2][1] - self.slices[2].stop,  # superior
+            self.slices[1].start - self.raw_slices[1][0],  # posterior
+            self.raw_slices[1][1] - self.slices[1].stop,  # anterior
+            self.slices[0].start - self.raw_slices[0][0],  # left
+            self.raw_slices[0][1] - self.slices[0].stop,  # right
         )
 
         return dict(offset=self.offset, pad=self.pad, slices=self.slices)
 
-class SpatialCrop(BaseTransform):
-    def __init__(self, size, slices = None, start = None, stop = None, device: None | torch.device = None) -> None:
+
+class AdjustAffineToSpatialCrop(BaseTransform):
+    def __init__(self, offset, device: None | torch.device = None) -> None:
         super().__init__(device)
-        self.size = size # to validate input
+        if not isinstance(offset, torch.Tensor):
+            offset = torch.tensor(offset, device=self.device)
+        self.offset = offset
+
+    def forward(self, affine: torch.Tensor):
+        out = affine.clone()
+        out[:3,3] += out[:3,:3] @ self.offset
+        return out
+
+
+class SpatialCrop(BaseTransform):
+    def __init__(
+        self,
+        size,
+        slices=None,
+        start=None,
+        stop=None,
+        device: None | torch.device = None,
+    ) -> None:
+        super().__init__(device)
+        self.size = size  # to validate input
         if slices is None:
-            assert start is not None and stop is not None, "`start` and `stop` are required if `slices` is None."
-            self.slices = tuple(slice(int(i), int(j)) for i,j in zip(start, stop))
+            assert (
+                start is not None and stop is not None
+            ), "`start` and `stop` are required if `slices` is None."
+            self.slices = tuple(slice(int(i), int(j)) for i, j in zip(start, stop))
         else:
             self.slices = slices
 
@@ -112,7 +136,6 @@ class PadTransform(BaseTransform):
         # torch.nn.functional.pad(x, (1,0,0,0,0,0)) -> x[:,  :,  :,  0]
         # torch.nn.functional.pad(x, (0,1,0,0,0,0)) -> x[:,  :,  :, -1]
 
-
     def forward(self, image):
         # assert image.size()[-3:] == self.size, f"Padding was calculated for an image of size {self.size}; got image of size {image.size()[-3:]}"
         return torch.nn.functional.pad(image, self.pad, **self.pad_kwargs)
@@ -134,6 +157,37 @@ class TranslationTransform(BaseTransform):
             return x - self.translation
         else:
             return x + self.translation
+
+
+class RandTranslationTransform(RandomizableTransform):
+    def __init__(
+        self,
+        x_range: tuple | list[float],
+        y_range: tuple | list[float],
+        z_range: tuple | list[float],
+        prob: float = 1.0,
+        device: None | torch.device = None,
+    ):
+        super().__init__(prob, device)
+        self.x_range = x_range
+        self.y_range = y_range
+        self.z_range = z_range
+
+    def rand_in_range(self, r: tuple | list[float]):
+        return r[0] + torch.rand(1, device=self.device) * (r[1] - r[0])
+
+    def forward(self, x: torch.Tensor):
+        if self.should_apply_transform():
+            t = torch.cat(
+                (
+                    self.rand_in_range(self.x_range),
+                    self.rand_in_range(self.y_range),
+                    self.rand_in_range(self.z_range),
+                )
+            )
+            return x + t
+        else:
+            return x
 
 
 class RandLinearTransform(RandomizableTransform):
@@ -242,9 +296,9 @@ class ScaleAndSquare(BaseTransform):
         self.out_size = out_size
         assert n_steps >= 0
         self.n_steps = n_steps
+        self.step_size = 1.0 / (2.0**self.n_steps)
 
-
-    def apply(self, field, n_steps: int):
+    def _apply(self, field, n_steps: int):
         """Scale and square for matrix exponentiation.
 
         Parameters
@@ -270,12 +324,15 @@ class ScaleAndSquare(BaseTransform):
         elif n_steps > 0:
             resample = GridSample(self.grid + channel_last(field), self.out_size)
             field = field + resample(field)
-            return self.apply(field, n_steps - 1)
+            return self._apply(field, n_steps - 1)
         else:
-            raise ValueError(f"`n_steps` must be greater than or equal to zero (got {n_steps})")
+            raise ValueError(
+                f"`n_steps` must be greater than or equal to zero (got {n_steps})"
+            )
 
     def forward(self, field):
-        return self.apply(field, self.n_steps)
+        return self._apply(field * self.step_size, self.n_steps)
+
 
 class RandNonlinearTransform(RandomizableTransform):
     def __init__(
@@ -336,27 +393,23 @@ class RandNonlinearTransform(RandomizableTransform):
             # no deformation in AP direction
             V[1] = 0
 
+        # this is slow on the CPU
         if exponentiate_field:
-            self.sas = ScaleAndSquare(self.grid, self.out_size)
-
-            # this is slow on the CPU
-            steplength = 1.0 / (2.0**scale_and_square_steps)
+            self.sas = ScaleAndSquare(self.grid, self.out_size, scale_and_square_steps)
 
             # forward integration
-            U = V * steplength
+            # U = V * steplength
             # U = self.scale_and_square(U, self.scale_and_square_steps)
-            U = self.sas.apply(U, self.scale_and_square_steps)
+            U = self.sas(V)
 
             # backward integration
-            U_inv = -V * steplength
+            # U_inv = -V * steplength
             # U_inv = self.scale_and_square(U_inv, self.scale_and_square_steps)
-            U_inv = self.sas.apply(U_inv, self.scale_and_square_steps)
-
+            U_inv = self.sas(-V)
 
             self.trans = dict(forward=U, backward=U_inv)
         else:
             self.trans = dict(forward=V)
-
 
     def forward(self, grid, direction="forward"):
         if self.should_apply_transform():
@@ -368,6 +421,7 @@ class RandNonlinearTransform(RandomizableTransform):
                     return grid + sampler(self.trans[direction]).squeeze().T
         else:
             return grid
+
 
 """
 # NOTE - in case we want to implement the affine sub to sub transform as well
@@ -413,6 +467,7 @@ out11 = sampler(s2_t1)
 nib.Nifti1Image(out11[0].numpy(), S2A).to_filename(d / f"affine_{s2}-to-{s1}.nii")
 
 """
+
 
 class XSubWarpImage(BaseTransform):
     def __init__(
@@ -479,7 +534,6 @@ class XSubWarpImage(BaseTransform):
         return self.sampler(image)
 
 
-
 class XSubWarpSurface_v1(BaseTransform):
     def __init__(
         self,
@@ -524,11 +578,9 @@ class XSubWarpSurface_v1(BaseTransform):
         self.deformation_field = sampler(s2_deform, padding_mode="border")
         self.size = self.deformation_field.size()[-3:]
 
-
     def forward(self, surface):
         sampler = GridSample(surface, self.size)
         return sampler(self.deformation_field, padding_mode="border").squeeze().T
-
 
 
 class XSubWarpSurface_v2(BaseTransform):
@@ -573,6 +625,7 @@ class XSubWarpSurface_v2(BaseTransform):
         surface_mni = self2mni(self.s1_deform_backward, padding_mode="border").T
         mni2other = GridSample(surface_mni, self.s2_deform.size()[-3:])
         return mni2other(self.s2_deform, padding_mode="border").T
+
 
 class CheckCoordsInside(BaseTransform):
     def __init__(
@@ -794,15 +847,17 @@ class GridSample(BaseTransform):
         """
         super().__init__()
 
-        self.grid = grid
+        # size
+        self.size = size
         if not assume_normalized:
             assert (
                 size is not None
             ), "`size` must be provided when `assume_normalized = False`"
             assert len(size) == 3
-        self.size = size
         self.assume_normalized = assume_normalized
 
+        # grid
+        self.grid = grid
         self.grid_ndim = len(self.grid.shape)
         assert self.grid_ndim in {2, 3, 4, 5}
 
@@ -822,9 +877,9 @@ class GridSample(BaseTransform):
                 self.norm_grid = self.norm_grid[None]  # 1,W,H,D,3
             case 5:
                 # includes batch dim so assume it is OK
-                pass # N,W,H,D,3
+                pass  # N,W,H,D,3
 
-    def forward(self, image, padding_mode="zeros"):
+    def forward(self, image, padding_mode="border"):
         """_summary_
 
         image : (1, 3, ...) (2, 3, ...)
@@ -849,10 +904,9 @@ class GridSample(BaseTransform):
             return image
 
         if not self.assume_normalized:
-            assert (image_size := tuple(image.size()[-3:])) == tuple(
-                self.size
+            assert (
+                (image_size := tuple(image.size()[-3:])) == tuple(self.size)
             ), f"Expected image with spatial dimensions {self.size} but got {image_size}."
-
 
         assert (image_ndim := len(image.shape)) in {3, 4, 5}
 
@@ -863,7 +917,7 @@ class GridSample(BaseTransform):
         elif image_ndim == 4:
             image = image[None]
         elif image_ndim == 5:
-            pass # already has batch dim
+            pass  # already has batch dim
         image = image.transpose(2, 4)  # NOTE xyz -> zyx (!)
 
         # NOTE `sample` has original xyz ordering! (N,C,W,H,D)
@@ -887,10 +941,11 @@ class GridSample(BaseTransform):
             ).to(image.dtype)
 
         if self.grid_ndim in {2, 3}:
-            sample.squeeze_((3, 4)) # remove H,D dims
-        sample.squeeze_(0) # remove batch dim if not present
+            sample.squeeze_((3, 4))  # remove H,D dims
+        sample.squeeze_(0)  # remove batch dim if not present
 
         return sample
+
 
 def _reduce_bbox(bbox: dict[str, torch.Tensor]):
     """Reduce to the total bounding box."""
@@ -903,8 +958,13 @@ def _reduce_bbox(bbox: dict[str, torch.Tensor]):
         torch.maximum(agg[1], v[1], out=agg[1])
     return agg
 
+
 class RestrictBoundingBox(BaseTransform):
-    def __init__(self, size: torch.Size | torch.Tensor | tuple, device: None | torch.device = None) -> None:
+    def __init__(
+        self,
+        size: torch.Size | torch.Tensor | tuple,
+        device: None | torch.device = None,
+    ) -> None:
         super().__init__(device)
         self.zeros = torch.zeros(3, device=self.device)
         self.size = torch.as_tensor(size, device=self.device)
@@ -917,7 +977,11 @@ class RestrictBoundingBox(BaseTransform):
 
 class SurfaceBoundingBox(BaseTransform):
     def __init__(
-        self, floor_and_ceil: bool = False, pad: float = 0.0, reduce: bool = False, device: None | torch.device = None
+        self,
+        floor_and_ceil: bool = False,
+        pad: float = 0.0,
+        reduce: bool = False,
+        device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
         self.floor_and_ceil = floor_and_ceil
@@ -948,12 +1012,14 @@ class SurfaceBoundingBox(BaseTransform):
         bbox = self._pad(bbox) if self.pad > 0 else bbox
         return bbox
 
+
 class BoundingBoxSize(BaseTransform):
     def __init__(self, device: None | torch.device = None) -> None:
         super().__init__(device)
 
     def forward(self, bbox):
         return bbox[1] - bbox[0]
+
 
 class BoundingBoxCorner(BaseTransform):
     def __init__(self, corner: str, device: None | torch.device = None) -> None:

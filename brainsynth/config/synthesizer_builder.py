@@ -1,8 +1,11 @@
 from functools import partial
+import torch
 
 from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
+from brainsynth import resources_dir
+from brainsynth.constants import IMAGE
 
 
 class SynthBuilder:
@@ -39,7 +42,7 @@ class SynthBuilder:
         -------
         state :
             A dictionary of Pipelines/transformations that updates the state of
-            the synthesizer each time it is called.
+        the synthesizer each time it is called.
         output :
             A dictionary of Pipelines/transformations that generates the
             outputs, e.g., a synthesized image and processed T1, T2, surfaces,
@@ -72,8 +75,8 @@ class DefaultSynth(SynthBuilder):
     def initialize_spatial_transform(self):
         self.nonlinear_transform = RandNonlinearTransform(
             self.config.out_size,
-            scale_min=0.03, # 0.10,
-            scale_max=0.06, # 0.15,
+            scale_min=0.03,  # 0.10,
+            scale_max=0.06,  # 0.15,
             std_max=4.0,
             exponentiate_field=True,
             grid=self.config.grid,
@@ -119,6 +122,15 @@ class DefaultSynth(SynthBuilder):
                 SurfaceBoundingBox(),
                 unpack_inputs=False,
             ),
+            extracerebral_mask=Pipeline(
+                SelectImage("generation_labels_dist"),
+                PipelineModule(
+                    MaskFromLabelImage,
+                    labels=[0] + list(IMAGE.generation_labels.kmeans),
+                    device=self.device,
+                ),
+                skip_on_InputSelectorError=True,
+            ),
             # where to center the (output) FOV in the input image space
             out_center=Pipeline(
                 ServeValue(self.config.out_center_str),
@@ -128,6 +140,13 @@ class DefaultSynth(SynthBuilder):
                     SelectState("surface_bbox"),
                     align_corners=self.config.align_corners,
                 ),
+                # RandTranslationTransform(
+                #     x_range=[-10, 10],
+                #     y_range=[-10, 10],
+                #     z_range=[-10, 10],
+                #     prob=0.5,
+                #     device=self.device,
+                # ),
             ),
             # the deformed grid
             resampling_grid=Pipeline(
@@ -142,23 +161,7 @@ class DefaultSynth(SynthBuilder):
             ),
         )
 
-    def build_intensity_transform(self):
-        # Example 1: Random skull-stripping
-
-        # RandSkullStrip = PipelineModule(
-        #     RandMaskRemove,
-        #     PipelineModule(
-        #         MaskFromLabelImage,
-        #         SelectImage("segmentation"),
-        #         labels = (0,),
-        #         device = device,
-        #     ),
-        # )
-
-        self.intensity_normalization = IntensityNormalization()
-
     def build_spatial_transform(self):
-
         self.image_deformation = SubPipeline(
             PipelineModule(
                 GridSample,
@@ -180,33 +183,65 @@ class DefaultSynth(SynthBuilder):
             CheckCoordsInside(self.config.out_size, device=self.device),
         )
 
+    def build_intensity_transform(self):
+        self.extracerebral = PipelineModule(
+            SwitchTransform,
+            IdentityTransform(),
+            # skull strip
+            PipelineModule(
+                RandMaskRemove,
+                SelectState("extracerebral_mask"),
+            ),
+            # salt and pepper noise (e.g., like MP2RAGE)
+            PipelineModule(
+                RandSaltAndPepperNoise,
+                SelectState("extracerebral_mask"),
+                scale=255.0,
+                device=self.device,
+            ),
+            prob=(0.8, 0.1, 0.1),
+        )
+        self.intensity_normalization = IntensityNormalization()
+
     def build_image(self):
         return Pipeline(
             # Synthesize image
-            SelectImage("generation_labels"),
+            SelectImage("generation_labels_dist"),
             SynthesizeIntensityImage(
                 mu_offset=25.0,
                 mu_scale=200.0,
-                sigma_offset=0.0,
-                sigma_scale=10.0,
-                pv_sigma=0.5,
+                sigma_offset=2.0,
+                sigma_scale=7.5,
+                pv_sigma_range=[0.25, 1.5],
+                min_cortical_contrast=10.0,
                 pv_tail_length=2.0,
                 photo_mode=self.config.photo_mode,
-                min_cortical_contrast=25.0,
                 device=self.device,
             ),
-            RandGammaTransform(mean=0.0, std=1.0, prob=0.75),
-            self.image_deformation, # Transform to output FOV
+            RandGammaTransform(prob=0.33),
+            self.extracerebral,
+            self.image_deformation,  # Transform to output FOV
             RandBiasfield(
                 self.config.out_size,
-                scale_min=0.02,
-                scale_max=0.04,
-                std_min=0.1,
-                std_max=0.6,
+                scale_min=0.01,
+                scale_max=0.03,
+                std_min=0.0,
+                std_max=0.3,
                 photo_mode=self.config.photo_mode,
-                prob=0.9,
+                prob=0.75,
                 device=self.device,
             ),
+            # Small, local intensity variations
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.10,
+            #     scale_max=0.20,
+            #     std_min=0.0,
+            #     std_max=0.15,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.5,
+            #     device=self.device,
+            # ),
             self.resolution_augmentation(),
             self.intensity_normalization,
         )
@@ -237,23 +272,23 @@ class DefaultSynth(SynthBuilder):
                 self.image_deformation,
                 skip_on_InputSelectorError=True,
             ),
-            t2w=Pipeline(
-                SelectImage("t2w"),
-                self.image_deformation,
-                self.intensity_normalization,
-                skip_on_InputSelectorError=True,
-            ),
-            t2w_mask=Pipeline(
-                SelectImage("t2w_mask"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
-            brainseg=Pipeline(
-                SelectImage("brainseg"),
-                self.image_deformation,
-                OneHotEncoding(self.config.segmentation_num_labels),
-                skip_on_InputSelectorError=True,
-            ),
+            # t2w=Pipeline(
+            #     SelectImage("t2w"),
+            #     self.image_deformation,
+            #     self.intensity_normalization,
+            #     skip_on_InputSelectorError=True,
+            # ),
+            # t2w_mask=Pipeline(
+            #     SelectImage("t2w_mask"),
+            #     self.image_deformation,
+            #     skip_on_InputSelectorError=True,
+            # ),
+            # brainseg=Pipeline(
+            #     SelectImage("brainseg"),
+            #     self.image_deformation,
+            #     OneHotEncoding(self.config.segmentation_num_labels),
+            #     skip_on_InputSelectorError=True,
+            # ),
             image=self.build_image(),
             surface=Pipeline(
                 SelectSurface(),
@@ -263,6 +298,13 @@ class DefaultSynth(SynthBuilder):
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
                 self.surface_deformation,
+                # RandTranslationTransform(
+                #     x_range=[-5, 5],
+                #     y_range=[-5, 5],
+                #     z_range=[-5, 5],
+                #     prob=0.5,
+                #     device=self.device,
+                # ),
                 skip_on_InputSelectorError=True,
             ),
         )
@@ -290,6 +332,7 @@ class OnlySynth(DefaultSynth):
 class OnlySynthIso(OnlySynth):
     def resolution_augmentation(self):
         return IdentityTransform()
+
 
 class OnlySelect(OnlySynth):
     def __init__(self, config: SynthesizerConfig) -> None:
@@ -325,7 +368,7 @@ class OnlySelect(OnlySynth):
                     SelectState("selectable_images"),
                 ),
             ),
-            self.image_deformation, # Transform to output FOV
+            self.image_deformation,  # Transform to output FOV
             # RandBiasfield(
             #     self.config.out_size,
             #     scale_min=0.02,
@@ -344,6 +387,50 @@ class OnlySelect(OnlySynth):
 class OnlySelectIso(OnlySelect):
     def resolution_augmentation(self):
         return IdentityTransform()
+
+
+class OnlySynthIsoT1w(OnlySynthIso):
+    def build_intensity_transform(self):
+        self.intensity_normalization = IntensityNormalization()
+
+    def build_image(self):
+        prefix = "T1w_HCP20_multivariate_normal"
+        return Pipeline(
+            SelectImage("generation_labels"),
+            SynthesizeFromMultivariateNormal(
+                mean_loc=torch.load(
+                    resources_dir / "contrast_distributions" / f"{prefix}_mean_loc.pt"
+                ),
+                mean_scale_tril=torch.load(
+                    resources_dir
+                    / "contrast_distributions"
+                    / f"{prefix}_mean_scale_tril.pt"
+                ),
+                sigma_loc=torch.load(
+                    resources_dir / "contrast_distributions" / f"{prefix}_sigma_loc.pt"
+                ),
+                sigma_scale_tril=torch.load(
+                    resources_dir
+                    / "contrast_distributions"
+                    / f"{prefix}_sigma_scale_tril.pt"
+                ),
+                device=self.device,
+            ),
+            PipelineModule(RandBlendImages, SelectImage("t1w"), prob=0.5),
+            self.image_deformation,  # Transform to output FOV
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.01,
+            #     scale_max=0.03,
+            #     std_min=0.0,
+            #     std_max=0.3,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.75,
+            #     device=self.device,
+            # ),
+            self.resolution_augmentation(),
+            self.intensity_normalization,
+        )
 
 
 class SynthOrSelectImage(DefaultSynth):
@@ -374,20 +461,19 @@ class SynthOrSelectImage(DefaultSynth):
                 [
                     # Synthesize image
                     Pipeline(
-                        SelectImage("generation_labels"),
+                        SelectImage("generation_labels_dist"),
                         SynthesizeIntensityImage(
                             mu_offset=25.0,
                             mu_scale=200.0,
                             sigma_offset=0.0,
                             sigma_scale=10.0,
-                            pv_sigma=0.5,
-                            pv_tail_length=2.0,
+                            pv_sigma_range=[0.1, 1.5],
+                            min_cortical_contrast=20.0,
                             photo_mode=self.config.photo_mode,
-                            min_cortical_contrast=25.0,
                             device=self.device,
                         ),
                         # RandGaussianNoise(),
-                        RandGammaTransform(mean=0.0, std=1.0, prob=0.75),
+                        RandGammaTransform(prob=0.25),
                     ),
                     # Select one of the available (valid) images
                     Pipeline(
@@ -403,7 +489,7 @@ class SynthOrSelectImage(DefaultSynth):
                 ],
                 prob=(0.9, 0.1),
             ),
-            self.image_deformation, # Transform to output FOV
+            self.image_deformation,  # Transform to output FOV
             # RandBiasfield(
             #     self.config.out_size,
             #     scale_min=0.02,
@@ -484,7 +570,7 @@ class XSubSynth(DefaultSynth):
                 ExtractDictKeys(),
                 unpack_inputs=False,
             ),
-            selectable_images = Pipeline(
+            selectable_images=Pipeline(
                 SelectState("available_images"),
                 Intersection(self.config.alternative_images),
                 unpack_inputs=False,
@@ -528,6 +614,13 @@ class XSubSynth(DefaultSynth):
                     SelectState("surface_bbox"),
                     align_corners=self.config.align_corners,
                 ),
+                # RandTranslationTransform(
+                #     x_range=[-10, 10],
+                #     y_range=[-10, 10],
+                #     z_range=[-10, 10],
+                #     prob=0.5,
+                #     device=self.device,
+                # ),
             ),
             # transform center to `other`
             other_out_center=Pipeline(
@@ -589,7 +682,7 @@ class XSubSynth(DefaultSynth):
                     SelectState("selectable_images"),
                 ),
             ),
-            self.image_deformation, # Transform to output FOV
+            self.image_deformation,  # Transform to output FOV
             # RandBiasfield(
             #     self.config.out_size,
             #     scale_min=0.02,
@@ -645,9 +738,17 @@ class XSubSynth(DefaultSynth):
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
                 self.surface_deformation,
+                # RandTranslationTransform(
+                #     x_range=[-5, 5],
+                #     y_range=[-5, 5],
+                #     z_range=[-5, 5],
+                #     prob=0.5,
+                #     device=self.device,
+                # ),
                 skip_on_InputSelectorError=True,
             ),
         )
+
 
 class XSubSynthIso(XSubSynth):
     def resolution_augmentation(self):

@@ -2,7 +2,6 @@ import torch
 
 from .base import BaseTransform
 
-
 # class Reindex(BaseTransform):
 #     def __init__(self, labels: torch.IntTensor):
 #         """Reindex data, e.g., [1,3,5,7] to [0,1,2,3]."""
@@ -34,8 +33,8 @@ class MaskFromLabelImage(BaseTransform):
         super().__init__(device)
         self.labels = torch.as_tensor(labels, device=self.device)
 
-    def forward(self, label_image: torch.Tensor):
-        return torch.isin(label_image, self.labels)
+    def forward(self, image: torch.Tensor):
+        return torch.isin(image, self.labels)
 
 class OneHotEncoding(BaseTransform):
     def __init__(self, num_classes: int, device: None | torch.device = None) -> None:
@@ -49,6 +48,7 @@ class OneHotEncoding(BaseTransform):
         assert not x.is_floating_point()
         spatial_shape = x.shape[-3:]
         n = x.numel()
-        out = torch.zeros((self.num_classes, n), dtype=x.dtype, device=x.device)
+        # out = torch.zeros((self.num_classes, n), dtype=x.dtype, device=x.device)
+        out = torch.zeros((self.num_classes, n), dtype=torch.bool, device=x.device)
         out[x.ravel(), torch.arange(n, dtype=torch.int)] = 1
         return out.reshape(self.num_classes, *spatial_shape)

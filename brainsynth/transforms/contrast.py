@@ -6,6 +6,55 @@ from brainsynth.transforms.filters import GaussianSmooth
 
 gl = IMAGE.generation_labels
 
+class SynthesizeFromMultivariateNormal(BaseTransform):
+    def __init__(
+        self,
+        mean_loc: torch.Tensor,
+        mean_scale_tril: torch.Tensor,
+        sigma_loc: torch.Tensor,
+        sigma_scale_tril: torch.Tensor,
+        pv_sigma_range: list[float] = [0.25, 0.5],
+        pv_tail_length: float = 2.0,
+        device: None | torch.device = None
+    ) -> None:
+        super().__init__(device)
+
+        self.dist_mean = torch.distributions.MultivariateNormal(
+            mean_loc.to(self.device), scale_tril=mean_scale_tril.to(self.device)
+        )
+        self.dist_sigma = torch.distributions.MultivariateNormal(
+            sigma_loc.to(self.device), scale_tril=sigma_scale_tril.to(self.device)
+        )
+
+        # sample smoothing
+        pv_sigma = pv_sigma_range[0] + (
+            pv_sigma_range[1] - pv_sigma_range[0]
+        ) * torch.rand(1, device=self.device)
+        pv_sigma = pv_sigma.item()
+        if (isinstance(pv_sigma, float) and (pv_sigma > 0.0)) or (
+            isinstance(pv_sigma, (list, tuple)) and any(i > 0.0 for i in pv_sigma)
+        ):
+            self.gaussian_blur = GaussianSmooth(
+                pv_sigma, pv_tail_length, device=self.device
+            )
+        else:
+            self.gaussian_blur = None
+
+    def sample_image(self, label: torch.Tensor):
+        # draw mean and standard deviation of each cluster
+        mean = self.dist_mean.sample()
+        sigma = self.dist_sigma.sample()
+
+        img = mean[label] + sigma[label] * torch.randn(label.shape, device=self.device)
+        if self.gaussian_blur is not None:
+            img = self.gaussian_blur(img)
+        img.clamp_(0, 255)
+        return img
+
+    def forward(self, label):
+        return self.sample_image(label)
+
+
 class SynthesizeIntensityImage(BaseTransform):
     def __init__(
         self,
@@ -13,10 +62,13 @@ class SynthesizeIntensityImage(BaseTransform):
         mu_scale: float,
         sigma_offset: float,
         sigma_scale: float,
-        pv_sigma: float | list[float],
-        pv_tail_length: float,
+        # pv_sigma: float | list[float],
+        pv_sigma_range: list[float] = [0.25, 1.0],
+        pv_tail_length: float = 2.0,
         photo_mode: bool = False,
-        min_cortical_contrast: float = 25.0,
+        min_cortical_contrast: float = 0.0,  # 25.0
+        gen_labels_dist_encoded: bool = True,
+        gen_labels_dist_max: float = 3.0,
         device: None | torch.device = None,
     ):
         super().__init__(device)
@@ -25,51 +77,74 @@ class SynthesizeIntensityImage(BaseTransform):
 
         self.sample_gaussians(mu_offset, mu_scale, sigma_offset, sigma_scale)
 
+        # sample smoothing
+        pv_sigma = pv_sigma_range[0] + (
+            pv_sigma_range[1] - pv_sigma_range[0]
+        ) * torch.rand(1, device=self.device)
+        pv_sigma = pv_sigma.item()
         if (isinstance(pv_sigma, float) and (pv_sigma > 0.0)) or (
             isinstance(pv_sigma, (list, tuple)) and any(i > 0.0 for i in pv_sigma)
         ):
-            self.gaussian_blur = GaussianSmooth(pv_sigma, pv_tail_length, device=self.device)
+            self.gaussian_blur = GaussianSmooth(
+                pv_sigma, pv_tail_length, device=self.device
+            )
         else:
             self.gaussian_blur = None
 
+        self.gen_labels_dist_encoded = gen_labels_dist_encoded
+        self.gen_labels_dist_max = gen_labels_dist_max
+
     def sample_gaussians(self, mu_offset, mu_scale, sigma_offset, sigma_scale):
         # Generate Gaussians
-        # ------------------
         mu = torch.zeros(gl.n_labels, device=self.device)
         sigma = torch.zeros(gl.n_labels, device=self.device)
 
         n = gl.label_range[1] - gl.label_range[0]
         slc = slice(*gl.label_range)
 
-        mu[slc] = mu_offset + mu_scale * torch.rand(n)
-        sigma[slc] = sigma_offset + sigma_scale * torch.rand(n)
+        mu[slc] = mu_offset + mu_scale * torch.rand(n, device=self.device)
+        sigma[slc] = sigma_offset + sigma_scale * torch.rand(n, device=self.device)
 
-        scale_factor = mu[slc] / (mu_offset + mu_scale)
-        sigma[slc] *= scale_factor
+        # # draw GM mean around WM
+        # std = 7.0 * sigma_scale
+        # while True:
+        #     new_mu = mu[gl.white] + torch.randn(1, device=self.device) * std
+        #     if mu_offset <= new_mu <= mu_offset + mu_scale:
+        #         mu[gl.gray] = new_mu
+        #         break
 
-        # set the background to zero every once in a while (or always in photo mode)
-        if self.photo_mode:  # or torch.rand(1, device=self.device) < 0.5:
+        # scale sigma by mu but make sure we don't kill all noise
+        # mu_max = mu_offset + mu_scale
+        # scale_factor = (
+        #     torch.minimum(
+        #         mu[slc] + 3 * mu_offset, torch.tensor(mu_max, device=self.device)
+        #     )
+        #     / mu_max
+        # )
+        # sigma[slc] *= scale_factor
+
+        # set the background to zero in photo mode
+        if self.photo_mode:
             mu[0] = 0
 
-        # Ensure contrast
-        # ---------------
         # Ensure that there is *some* contrast between white and gray matter
         # and gray matter and CSF.
         #   20 seems OK
         #   50 always gives nice contrast everytime
         if self.min_cortical_contrast > 0.0:
-            for i in (gl.white, gl.gray):
-                d = mu[i] - mu[i + 1]
+            for inner, outer in ((gl.white, gl.gray), (gl.gray, gl.csf)):
+                d = mu[inner] - mu[outer]
                 if (ad := d.abs()) < self.min_cortical_contrast:
                     correction = self.min_cortical_contrast - ad
                     if d < 0:
-                        mu[i + 1] += correction
+                        mu[outer] += correction
                     else:
-                        mu[i + 1] -= correction
+                        mu[outer] -= correction
 
         # Partial volume information
         # --------------------------
         # mix parameters
+
         frac = torch.linspace(0, 1, 50, device=self.device)
 
         mu[gl.pv.lesion : gl.pv.white] = mu[gl.lesion] + frac * (
@@ -92,18 +167,62 @@ class SynthesizeIntensityImage(BaseTransform):
         )
         sigma[gl.pv.csf] = sigma[gl.csf]
 
-        # mu[100:150] = mu[1] + frac * (mu[2]-mu[1])
-        # mu[150:200] = mu[2] + frac * (mu[3]-mu[2])
-        # mu[200:250] = mu[3] + frac * (mu[4]-mu[3])
-        # mu[250] = mu[4]
-
-        # sigma[100:150] = sigma[1] + frac * (sigma[2]-sigma[1])
-        # sigma[150:200] = sigma[2] + frac * (sigma[3]-sigma[2])
-        # sigma[200:250] = sigma[3] + frac * (sigma[4]-sigma[3])
-        # sigma[250] = sigma[4]
-
         self.mu = mu
         self.sigma = sigma
+
+    # Used to generate the distance encoded labels
+
+    # def distance_to_label(self, d, max_d, n, start_label):
+    #     return torch.round((d+max_d)*n/max_d + start_label)
+
+    def label_to_distance(self, label, n, start_label):
+        return (
+            label - start_label
+        ) / n * self.gen_labels_dist_max - self.gen_labels_dist_max
+
+    @staticmethod
+    def distance_to_pv(x, i: float | torch.Tensor = 1.0):
+        """Label to PV fraction transfer function. We use a scaled sigmoid."""
+        return 1 / (1 + torch.exp(-i * x))
+
+    @staticmethod
+    def pv_to_label(f, start, end):
+        return torch.round(f * (end - start) + start)
+
+    def distance_labels_to_pv_labels(self, image: torch.Tensor):
+        """Convert labels encoding distance (e.g., [-3.0, 3.0]) to labels
+        encoding partial voluming (as in the original generation label image).
+
+        We randomize the smoothness of the PV effect.
+        """
+        # higher rho -> steeper transfer function
+        # [0.5, 3.0] 1-4
+        # [2.0, 5.0]
+        rhos = [
+            1.0 + torch.rand(1, device=image.device) * 3.0, # WM-GM     [1.0, 4.0]
+            2.0 + torch.rand(1, device=image.device) * 2.0, # GM-CSF    [2.0, 4.0]
+        ]
+        info = [(gl.pv.white, gl.pv.gray), (gl.pv.gray, gl.pv.csf)]
+
+        # out = torch.clone(image)
+        out = image
+
+        for pv,rho in zip(info, rhos):
+            half_size = (pv[1] - pv[0]) / 2  # halfway point
+            mask = (image >= pv[0]) & (image <= pv[1])
+            labels = image[mask]
+
+            new_labels = self.pv_to_label(
+                self.distance_to_pv(
+                    self.label_to_distance(labels, half_size, pv[0]),
+                    rho,
+                ),
+                *pv,
+            ).to(image.dtype)
+
+            out[mask] = new_labels
+
+        return out
 
     def sample_image(self, label: torch.Tensor):
         # sample synthetic image from gaussians
@@ -114,16 +233,22 @@ class SynthesizeIntensityImage(BaseTransform):
         # d = self._rand_buffer.normal_(a, b, generator=self._generator)
         # torch.normal(a, b, generator=self._generator, out=self._rand_buffer)
 
+        if self.gen_labels_dist_encoded:
+            label = self.distance_labels_to_pv_labels(label)
+
         img = self.mu[label]
         if self.gaussian_blur is not None:
             img_blur = self.gaussian_blur(img)
             # we explicitly model PV in some areas so use that instead of the
             # blurred image.
+
             explicit_pv_mask = (label >= gl.pv.lesion) & (label <= gl.pv.csf)
             img_blur[explicit_pv_mask] = img[explicit_pv_mask]
         else:
             img_blur = img
         img_blur += self.sigma[label] * torch.randn(label.shape, device=self.device)
+        img_blur[img_blur < 0] = 0
+
         return img_blur
         # return self.mu[label] + self.sigma[label] * torch.randn(
         #     label.shape, device=self.device
@@ -134,6 +259,38 @@ class SynthesizeIntensityImage(BaseTransform):
         # image = self.sample_image(label)
         # image[image < lut.Unknown] = lut.Unknown # clip
         # return image
+
+
+# trans = RandSaltAndPepperNoise(gl.kmeans, prob = 0.1)
+# trans(image, label_image)
+
+
+class RandSaltAndPepperNoise(RandomizableTransform):
+    def __init__(
+        self,
+        mask,
+        alpha=0.1,
+        beta=0.1,
+        scale=None,
+        prob: float = 1.0,
+        device: None | torch.device = None,
+    ):
+        super().__init__(prob, device)
+        self.mask = mask
+        self.mask_size = torch.Size([mask.sum()])
+        self.alpha = alpha
+        self.beta = beta
+        self.scale = scale
+        self.beta_dist = torch.distributions.Beta(
+            torch.tensor([self.alpha], device=self.device),
+            torch.tensor([self.beta], device=self.device),
+        )
+
+    def forward(self, image):
+        if self.should_apply_transform:
+            sp = self.beta_dist.sample(self.mask_size).squeeze(1)
+            image[self.mask] = sp if self.scale is None else sp * self.scale
+        return image
 
 
 class RandMaskRemove(RandomizableTransform):
@@ -191,21 +348,35 @@ class RandGaussianNoise(RandomizableTransform):
 
 
 class RandGammaTransform(RandomizableTransform):
-    def __init__(self, mean: float, std: float, prob: float = 1.0):
+    def __init__(
+        self,
+        concentration: float = 0.5,
+        rate: float = 0.5,
+        gamma_clip_range: tuple = (0.5, 2.0),
+        prob: float = 1.0,
+    ):
+        """Concentration and rate are parameters of the gamma distribution from
+        which the gamma coefficient is sampled (but clipped to gamma_clip_range)."""
         super().__init__(prob)
-        self.mean = mean
-        self.std = std
+        self.concentration = concentration
+        self.rate = rate
+        self.gamma_clip_range = gamma_clip_range
 
-    def _sample_gamma(self, device):
-        return torch.exp(self.mean + self.std * torch.randn(1, device=device))
+    # def _sample_gamma(self, device):
+    #     return torch.exp(self.mean + self.std * torch.randn(1, device=device)).clamp(*self.gamma_clip_range)
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         if not self.should_apply_transform():
             return image
-        gamma = self._sample_gamma(image.device)
+
+        m = torch.distributions.Gamma(
+            torch.tensor([self.concentration], device=image.device),
+            torch.tensor([self.rate], device=image.device),
+        )
+        gamma = m.sample().clamp(*self.gamma_clip_range)
         # apply transform
         ra = image.aminmax()
-        r = ra.max - ra.min
+        r = ra.max - ra.min  # original range
         return ((image - ra.min) / r) ** gamma * r + ra.min
 
 
@@ -264,27 +435,29 @@ class RandBiasfield(RandomizableTransform):
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """Add a log-transformed bias field to an image."""
-        # factor = 300.0
-        # # Gamma transform
-        # gamma = torch.exp(self.config["intensity"]["gamma_std"] * torch.randn(1))
-        # SYN_gamma = factor * (image / factor) ** gamma
         return image * self.biasfield if self.should_apply_transform() else image
 
 
 class RandBlendImages(RandomizableTransform):
-    def __init__(self, image_name: str, blend_names: tuple | list, prob: float = 1.0):
+    def __init__(self, blend_images: torch.Tensor | list[torch.Tensor], prob: float = 1.0):
         super().__init__(prob)
 
-        self.image_name = image_name
-        self.blend_names = blend_names
+        if isinstance(blend_images, torch.Tensor):
+            self.blend_images = [blend_images]
+        else:
+            self.blend_images = blend_images
+        self.n_blend = len(blend_images)
 
-    def forward(self, images: dict[str, torch.Tensor]):
+    def forward(self, image: torch.Tensor):
         if not self.should_apply_transform:
-            return images[self.image_name]
+            return image
 
         # choose image
-        i = torch.randint(0, len(self.config.intensity.blend.images), (1,))
+        if self.n_blend > 1:
+            i = torch.randint(0, self.n_blend, (1,), device=image.device)
+        else:
+            i = 0
+
         # choose ratio
-        sr = torch.rand(1)
-        ir = 1 - sr
-        return sr * images[self.image_name] + ir * images[self.blend_names[i]]
+        sr = torch.rand(1, device=image.device)
+        return sr * image + (1 - sr) * self.blend_images[i]
