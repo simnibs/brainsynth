@@ -7,7 +7,6 @@ from brainsynth.transforms import *
 from brainsynth import resources_dir
 from brainsynth.constants import IMAGE
 
-
 class SynthBuilder:
     def __init__(self, config) -> None:
         self.config = config
@@ -59,6 +58,91 @@ class SynthBuilder:
         output = self.build_output()
 
         return state, output
+
+
+class Inference(SynthBuilder):
+    """Process and image called `image` and """
+    def build_state(self):
+        return dict(
+            in_size=Pipeline(
+                SelectImage("image"),
+                SpatialSize(),
+            ),
+            surface_bbox=Pipeline(
+                SelectInitialVertices(),
+                SurfaceBoundingBox(),
+                unpack_inputs=False,
+            ),
+            out_center=Pipeline(
+                ServeValue(self.config.out_center_str),
+                PipelineModule(
+                    CenterFromString,
+                    SelectState("in_size"),
+                    SelectState("surface_bbox"),
+                    align_corners=self.config.align_corners,
+                ),
+            ),
+            crop_params = Pipeline(
+                SelectState("in_size"),
+                PipelineModule(
+                    SpatialCropParameters,
+                    self.config.out_size,
+                    SelectState("out_center"),
+                )
+            ),
+        )
+
+    def build_spatial_transform(self):
+        self.image_crop = SubPipeline(
+            PipelineModule(
+                SpatialCrop,
+                SelectState("in_size"),
+                SelectState("crop_params", "slices"),
+            ),
+            PipelineModule(
+                PadTransform,
+                SelectState("crop_params", "pad"),
+            )
+        )
+
+        self.surface_translation = SubPipeline(
+            PipelineModule(
+                TranslationTransform,
+                SelectState("crop_params", "offset", invert=True),
+            ),
+            CheckCoordsInside(self.config.out_size, device=self.device),
+        )
+
+        self.affine_adjuster = SubPipeline(
+            PipelineModule(
+                AdjustAffineToSpatialCrop,
+                SelectState("crop_params", "offset"),
+            ),
+        )
+
+
+    def build_intensity_transform(self):
+        self.intensity_normalization = IntensityNormalization()
+
+    def build_output(self):
+        return dict(
+            image=Pipeline(
+                SelectImage("image"),
+                self.image_crop,
+                self.intensity_normalization,
+            ),
+            surface=Pipeline(
+                SelectSurface(),
+                self.surface_translation,
+                skip_on_InputSelectorError=True,
+            ),
+            initial_vertices=Pipeline(
+                SelectInitialVertices(),
+                self.surface_translation,
+                skip_on_InputSelectorError=True,
+            ),
+            affine=Pipeline(SelectAffine("image"), self.affine_adjuster),
+        )
 
 
 class DefaultSynth(SynthBuilder):

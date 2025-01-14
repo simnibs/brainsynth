@@ -14,9 +14,9 @@ hemispheres = ("lh", "rh")
 # Mapped inputs
 
 MappedInputKeys = namedtuple(
-    "MappedInputKeys", ["image", "surface", "initial_vertices", "state"]
+    "MappedInputKeys", ["image", "surface", "initial_vertices", "state", "affine"]
 )
-mapped_input_keys = MappedInputKeys("image", "surface", "initial_vertices", "state")
+mapped_input_keys = MappedInputKeys("image", "surface", "initial_vertices", "state", "affine")
 
 
 # ---------------------------

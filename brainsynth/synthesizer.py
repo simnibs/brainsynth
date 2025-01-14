@@ -28,20 +28,24 @@ class Synthesizer(torch.nn.Module):
     def unpack(out):
         surface = out.pop("surface") if "surface" in out else {}
         initial_vertices = out.pop("initial_vertices") if "initial_vertices" in out else {}
-        return out, surface, initial_vertices
+        affine = out.pop("affine") if "affine" in out else {}
+        return out, surface, initial_vertices, affine
 
     def forward(
         self,
         images: dict[str, torch.Tensor],
         surfaces: dict[str, dict[str, torch.Tensor]],
         initial_vertices: dict[str, torch.Tensor],
+        affines: dict[str, torch.Tensor] | None = None,
         unpack: bool = True,
     ):
+        affines = affines or {}
         mapped_inputs = {
             mikeys.image: self.ensure_device(images),
             mikeys.initial_vertices: self.ensure_device(initial_vertices),
             mikeys.surface: self.ensure_device(surfaces),
             mikeys.state: {},
+            mikeys.affine: self.ensure_device(affines),
         }
 
         # Build the pipelines

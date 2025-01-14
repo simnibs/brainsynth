@@ -3,7 +3,7 @@ from typing import Type
 
 import torch
 
-from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice, SwitchTransform
+from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice, SequentialTransform, SwitchTransform
 from .contrast import (
     IntensityNormalization,
     RandBiasfield,
@@ -122,6 +122,7 @@ class SelectState(InputSelector):
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         return super().forward(mapped_inputs[self.image])
 
+
 class SelectSurface(InputSelector):
     def __init__(self, *args, **kwargs):
         """Convenience class to select surfaces from the mapped inputs
@@ -133,6 +134,17 @@ class SelectSurface(InputSelector):
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         return super().forward(mapped_inputs[self.image])
 
+
+class SelectAffine(InputSelector):
+    def __init__(self, *args, **kwargs):
+        """Convenience class to select images from the mapped inputs
+        dictionary.
+        """
+        super().__init__(*args, **kwargs)
+        self.image = mikeys.affine
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.affine])
 
 class PipelineModule:
     def __init__(self, transform: Type[torch.nn.Module], *args, **kwargs) -> None:
