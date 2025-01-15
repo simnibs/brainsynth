@@ -21,8 +21,8 @@ import torch
 import surfa
 
 from brainsynth import root_dir
-from brainsynth.constants.FreeSurferLUT import FreeSurferLUT as lut
-from brainsynth.constants import constants, filenames
+from brainsynth.constants.lut.freesurfer import FreeSurferLUT as lut
+from brainsynth.constants import SURFACE
 
 
 def prepare_freesurfer_data(
@@ -266,9 +266,9 @@ def prepare_freesurfer_data(
         """
         return (base_nf * 4**i + 4) // 2
 
-    for i in constants.SURFACE_RESOLUTIONS:
+    for i in SURFACE.resolutions:
         nv = n_vertices_at_level(i)
-        for h in constants.HEMISPHERES:
+        for h in SURFACE.hemispheres:
             torch.save(
                 dict(
                     white=torch.tensor(surfaces[h, "white"].vertices[:nv]),
@@ -289,7 +289,7 @@ def prepare_freesurfer_data(
                 torch.from_numpy(surfaces[h, "pial"].vertices).amax(0).ceil().int() + 1,
             ),
         )
-        for h in constants.HEMISPHERES
+        for h in SURFACE.hemispheres
     }
     both = torch.stack([v for v in bounding_boxes.values()])
     bounding_boxes["brain"] = torch.stack((both[:, 0].amin(0), both[:, 1].amax(0)))
@@ -405,8 +405,8 @@ def crop_label_volume(data, margin=10, threshold=0):
 
 
 def align_with_identity_affine(img):
-    """Reorient image (and possibly flip dimensions) so as to bring as close as
-    possible to having an identity affine transformation matrix.
+    """Reorient image (and possibly flip dimensions) so as to bring it as close
+    as possible to having an identity affine transformation matrix.
     """
     perm, flip = (
         nib.orientations.io_orientation(np.linalg.inv(img.affine)).astype(int).T
@@ -423,7 +423,7 @@ def align_with_identity_affine(img):
     for i, f in enumerate(flip):
         if f == -1:
             affine[:3, 3] -= affine[:3, i] * (shape[i] - 1)
-            data = np.flip(data, i)
+            data = np.ascontiguousarray(np.flip(data, i))
 
     return nib.Nifti1Image(data, affine)
 
@@ -635,7 +635,7 @@ def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_thr
     flip_x = np.array([-1, 1, 1])
 
     sphere_reg = {}
-    for h in constants.HEMISPHERES:
+    for h in SURFACE.hemispheres:
         sphere = surf_dir / f"{h}.sphere"
         sphere_reg[h] = out_dir / f"{h}.sphere.reg"
         cmd = f"mris_register -curv {{sphere}} {folding_atlas} {sphere_reg[h]} -threads {n_threads}"
@@ -645,9 +645,9 @@ def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_thr
             # We need to flip the x axis as the atlas is left hemisphere
             # we do this and save to a temporary directory
 
-            # NOTE Consequently, rh.sphere.reg actually flipped so that it can
-            # be used with sphere-reg shipped with topofit/deepsurfer (which is
-            # lh)!
+            # NOTE Consequently, rh.sphere.reg is actually flipped so that it
+            # can be used with the sphere-reg shipped with topofit/deepsurfer
+            # (which is lh)!
             with tempfile.TemporaryDirectory(dir=out_dir) as tmpdir:
                 p = Path(tmpdir)
 
@@ -675,7 +675,7 @@ def resample_surfaces(surf_dir, out_dir, folding_atlas, sphere_reg_target, n_thr
     target_reg = surfa.load_mesh(str(sphere_reg_target))
 
     surf_buffer = {}
-    for h in constants.HEMISPHERES:
+    for h in SURFACE.hemispheres:
         source_reg = surfa.load_mesh(str(sphere_reg[h]))
         for s in surfaces:
             surf_in = surf_dir / f"{h}.{s}"
