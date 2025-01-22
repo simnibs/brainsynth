@@ -108,7 +108,9 @@ class Inference(SynthBuilder):
         self.surface_translation = SubPipeline(
             PipelineModule(
                 TranslationTransform,
-                SelectState("crop_params", "offset", invert=True),
+                SelectState("crop_params", "offset"),
+                invert=True,
+                device=self.device,
             ),
             CheckCoordsInside(self.config.out_size, device=self.device),
         )
@@ -117,6 +119,7 @@ class Inference(SynthBuilder):
             PipelineModule(
                 AdjustAffineToSpatialCrop,
                 SelectState("crop_params", "offset"),
+                device=self.device,
             ),
         )
 

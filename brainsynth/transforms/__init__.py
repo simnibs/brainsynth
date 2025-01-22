@@ -129,19 +129,19 @@ class SelectSurface(InputSelector):
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = mikeys.surface
+        self.surface = mikeys.surface
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.image])
+        return super().forward(mapped_inputs[self.surface])
 
 
 class SelectAffine(InputSelector):
     def __init__(self, *args, **kwargs):
-        """Convenience class to select images from the mapped inputs
+        """Convenience class to select affines from the mapped inputs
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = mikeys.affine
+        self.affine = mikeys.affine
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
         return super().forward(mapped_inputs[self.affine])

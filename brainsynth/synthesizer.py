@@ -34,11 +34,13 @@ class Synthesizer(torch.nn.Module):
     def forward(
         self,
         images: dict[str, torch.Tensor],
-        surfaces: dict[str, dict[str, torch.Tensor]],
-        initial_vertices: dict[str, torch.Tensor],
+        surfaces: dict[str, dict[str, torch.Tensor]] | None = None,
+        initial_vertices: dict[str, torch.Tensor] | None = None,
         affines: dict[str, torch.Tensor] | None = None,
         unpack: bool = True,
     ):
+        surfaces = surfaces or {}
+        initial_vertices = initial_vertices or {}
         affines = affines or {}
         mapped_inputs = {
             mikeys.image: self.ensure_device(images),

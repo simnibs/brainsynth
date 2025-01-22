@@ -67,7 +67,7 @@ class AdjustAffineToSpatialCrop(BaseTransform):
     def __init__(self, offset, device: None | torch.device = None) -> None:
         super().__init__(device)
         if not isinstance(offset, torch.Tensor):
-            offset = torch.tensor(offset, device=self.device)
+            offset = torch.tensor(offset, dtype=torch.float, device=self.device)
         self.offset = offset
 
     def forward(self, affine: torch.Tensor):
