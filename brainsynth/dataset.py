@@ -2,9 +2,11 @@ from pathlib import Path
 from typing import Callable
 
 import nibabel as nib
+import nibabel.processing
 import numpy as np
 import torch
 
+import brainsynth
 from brainsynth.constants import IMAGE, SURFACE
 from brainsynth.config import DatasetConfig, SynthesizerConfig, XDatasetConfig
 from brainsynth.synthesizer import Synthesizer
@@ -153,21 +155,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         # Filename generators
         match self.ds_structure:
             case "flat":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / f"{self.name}.{subject}.{image}"
-
                 def get_surface_filename(subject, surface):
                     # return self.ds_dir / f"{self.name}.{subject}.{surface}"
                     return self.ds_dir / f"{self.name}.{subject}.surf_dir" / surface
             case "tree":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / self.name / subject / image
-
                 def get_surface_filename(subject, surface):
                     return self.ds_dir / self.name / subject / surface
-
         self.get_image_filename = get_image_filename
         self.get_surface_filename = get_surface_filename
 
@@ -286,23 +283,6 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
             return target_surfaces, initial_vertices
 
-    # @staticmethod
-    # def stack_dict(d):
-    #     """dict with d[(a,b,c)] as keys to d[a][b][c]."""
-    #     out = {}
-    #     for k,v in d.items():
-    #         this_out = out
-    #         for kk in k:
-    #             if kk not in this_out:
-    #                 if kk == k[-1]:
-    #                     this_out[kk] = v
-    #                 else:
-    #                     this_out[kk] = {}
-    #                     this_out = this_out[kk]
-    #             else:
-    #                 this_out = out[kk]
-    #     return out
-
     def _load_target_surfaces(self, subject, hemi):
         return {
             h: {
@@ -331,32 +311,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             }
 
     def __repr__(self):
-        return f"{self.__class__.__name__} {self.name} in {self.ds_dir/self.name}"
-
-    # def load_surfaces(self, subject_dir):
-    #     if self.target_surface_resolution is None:
-    #         return {}, {}
-    #     else:
-    #         if self.target_surface_hemispheres == "random":
-    #             surface_hemi = [constants.HEMISPHERES[torch.randint(0, 2, (1,))]]
-    #         else:
-    #             surface_hemi = self.target_surface_hemispheres
-
-    #         # load target surfaces
-    #         surfaces = self.load_target_surfaces(subject_dir, surface_hemi)
-
-    #         # load initial surfaces
-    #         surfs = tuple(
-    #             surfaces[surface_hemi[0]].keys()
-    #         )  # assumes surfaces are the same in each hemisphere!
-    #         initial_vertices = self.load_initial_surfaces(
-    #             subject_dir, surface_hemi, surfs
-    #         )
-
-    #         return surfaces, initial_vertices
-
-    # def load_info(self, subject_dir):
-    #     return torch.load(subject_dir / constants.info)
+        return f"{self.__class__.__name__} {self.name} in {self.ds_dir / self.name}"
 
 
 class XDataset(torch.utils.data.Dataset):
@@ -394,14 +349,11 @@ class XDataset(torch.utils.data.Dataset):
         # Filename generators
         match self.ds_structure:
             case "flat":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / f"{self.name}.{subject}.{image}"
             case "tree":
-
                 def get_image_filename(subject, image):
                     return self.ds_dir / self.name / subject / image
-
         self.get_image_filename = get_image_filename
 
     def _initialize_image_settings(self, images):
@@ -421,7 +373,8 @@ class XDataset(torch.utils.data.Dataset):
             images[image] = _load_image(fi, img.dtype, img.transform)
         return images
 
-class GenericDataset(torch.utils.data.Dataset):
+
+class PredictionDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         images: list | tuple[Path, str],
@@ -430,12 +383,20 @@ class GenericDataset(torch.utils.data.Dataset):
         mni_space: str = "mni152",
         hemi: str | None = None,
         nv_template: int = 62,
+        conform: bool = False,
+        mni_transform_loader: Callable = np.loadtxt,
     ):
         """Dataset formed from a list of images and transformations.
 
 
         Parameters
         ----------
+
+        conform: bool
+            If the linear part of the affine matrix is not equal to identity,
+            resample the image such that it is (uses
+            nibabel.processing.conform). If false, the image is assumed to be
+            correctly preprocessed.
 
         """
         assert len(images) == len(mni_transform)
@@ -453,11 +414,11 @@ class GenericDataset(torch.utils.data.Dataset):
         self.mni_transform = mni_transform
         self.mni_space = mni_space
         self.mni_direction = mni_direction
+        self.conform = conform
+        self.mni_transform_loader = mni_transform_loader
 
         self.template = {}
         self.template_meta = {}
-
-
 
         # FSAVERAGE
         # for h in self.hemi:
@@ -491,31 +452,41 @@ class GenericDataset(torch.utils.data.Dataset):
             ]
         )
 
+        match mni_direction:
+            case "sub2mni":
+                def mni_to_sub(t):
+                    return torch.linalg.inv(t)
+            case "mni2sub":
+                def mni_to_sub(t):
+                    return t
+
         match self.mni_space:
             case "mni152":
                 # the template vertices are in mni305 so add a transformation
                 # from mni305 to mni152
-                self._preprocess_mni_transform = lambda t: self._mni_to_sub(t) @ mni305_to_mni152
+                def preprocess_mni_transform(t):
+                    return mni_to_sub(t) @ mni305_to_mni152
             case "mni305":
-                self._preprocess_mni_transform = lambda t: self._mni_to_sub(t)
+                def preprocess_mni_transform(t):
+                    return mni_to_sub(t)
 
-    def _mni_to_sub(self, t):
-        return torch.linalg.inv(t) if self.mni_direction == "sub2mni" else t
-
-    def _load_mni_transform(self, index):
-        return np.loadtxt(self.mni_transform[index])
+        self.preprocess_mni_transform = preprocess_mni_transform
 
     def prepare_initial_vertices(self, trans, vox2mri):
         trans = torch.linalg.inv(vox2mri) @ trans
         return {k: apply_affine(trans, v) for k, v in self.template.items()}
 
-    def load_initial_vertices(self, index, vox2mri):
-        trans = self._load_mni_transform(index)
+    def get_initial_vertices(self, index, vox2mri):
+        trans = self.mni_transform_loader(self.mni_transform[index])
         trans = torch.tensor(trans, dtype=torch.float)
-        trans = self._preprocess_mni_transform(trans)
+        trans = self.preprocess_mni_transform(trans)
         return self.prepare_initial_vertices(trans, vox2mri)
 
     def preprocess_image(self, img):
+        # Apply conform if the linear part of the affine deviates identity,
+        # i.e., we want 1 mm voxels aligned the major axes in RAS orientation.
+        if self.conform and not np.allclose(img.affine[:3, :3], np.identity(3)):
+            img = nibabel.processing.conform(nib.funcs.squeeze_image(img))
         return img
 
     def load_image(self, index):
@@ -528,7 +499,7 @@ class GenericDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         image, vox2mri = self.load_image(index)
-        template = self.load_initial_vertices(index, vox2mri)
+        template = self.get_initial_vertices(index, vox2mri)
         return image, template, vox2mri
 
 
