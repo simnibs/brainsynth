@@ -60,7 +60,7 @@ class SynthBuilder:
         return state, output
 
 
-class Inference(SynthBuilder):
+class PredictionBuilder(SynthBuilder):
     """Process and image called `image` and """
     def build_state(self):
         return dict(

@@ -1,2 +1,2 @@
 from brainsynth.config.dataset import DatasetConfig, XDatasetConfig
-from brainsynth.config.synthesizer import InferenceConfig, SynthesizerConfig
+from brainsynth.config.synthesizer import PredictionConfig, SynthesizerConfig

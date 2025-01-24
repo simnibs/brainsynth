@@ -4,7 +4,7 @@ import torch
 from brainsynth.constants import IMAGE
 from brainsynth.transforms.spatial import GridCentering
 
-class InferenceConfig:
+class PredictionConfig:
     def __init__(self,
         builder: str,
         # in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
@@ -46,7 +46,7 @@ class InferenceConfig:
     def __repr__(self):
         return "\n".join([f"{k}: {v}" for k, v in self.__dict__.items()])
 
-class SynthesizerConfig(InferenceConfig):
+class SynthesizerConfig(PredictionConfig):
     def __init__(
         self,
         builder: str = "DefaultSynthBuilder",
