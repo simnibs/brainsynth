@@ -19,9 +19,6 @@ generate = [
     "surfa >= 0.6",
 ]
 
-[tool.setuptools]
-packages = ["brainsynth"]
-
 [tool.setuptools.package-data]
 brainsynth = [
     "resources/lh.white.smooth",
