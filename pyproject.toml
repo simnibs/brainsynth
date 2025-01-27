@@ -1,6 +1,6 @@
 [project]
 name = "BrainSynth"
-version = "0.0.1"
+version = "0.1a"
 description = "Tool for generating synthetic images of the brain and head from segmentations."
 maintainers = [
     {name = "Jesper Duemose Nielsen"}
@@ -8,7 +8,7 @@ maintainers = [
 requires-python = ">=3.11"
 dependencies = [
     "nibabel >= 5.1",
-    "numpy >= 1.26",
+    "numpy >= 2",
     "scipy >= 1.11",
     "torch >= 2",
 ]
@@ -18,3 +18,29 @@ generate = [
     "scikit-learn >= 1.3",
     "surfa >= 0.6",
 ]
+
+[tool.setuptools.package-data]
+brainsynth = [
+    "resources/lh.white.smooth",
+    "resources/rh.white.smooth",
+    "constants/lut/brainseg.lut",
+    "constants/lut/brainseg_with_extracerebral.lut",
+]
+
+[tool.cibuildwheel]
+build = ["cp311-*", "cp312-*"]
+archs = ["native"]
+
+# test-requires = "pytest"
+# test-command = "pytest {package}/tests"
+
+[tool.cibuildwheel.linux]
+# Only build manylinux wheels for linux
+manylinux-x86_64-image = "manylinux_2_28"
+skip = ["*musllinux*"]
+
+# [tool.cibuildwheel.windows]
+# # cibuildwheel does not yet include delvewheel by default and thus does not
+# # repair wheels on windows. Therefore, add this
+# before-build = "pip install delvewheel"
+# repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel}"
