@@ -19,6 +19,9 @@ generate = [
     "surfa >= 0.6",
 ]
 
+[tool.setuptools]
+packages = ["brainsynth"]
+
 [tool.setuptools.package-data]
 brainsynth = [
     "resources/lh.white.smooth",
@@ -26,21 +29,3 @@ brainsynth = [
     "constants/lut/brainseg.lut",
     "constants/lut/brainseg_with_extracerebral.lut",
 ]
-
-[tool.cibuildwheel]
-build = ["cp311-*", "cp312-*"]
-archs = ["native"]
-
-# test-requires = "pytest"
-# test-command = "pytest {package}/tests"
-
-[tool.cibuildwheel.linux]
-# Only build manylinux wheels for linux
-manylinux-x86_64-image = "manylinux_2_28"
-skip = ["*musllinux*"]
-
-# [tool.cibuildwheel.windows]
-# # cibuildwheel does not yet include delvewheel by default and thus does not
-# # repair wheels on windows. Therefore, add this
-# before-build = "pip install delvewheel"
-# repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel}"

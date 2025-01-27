@@ -25,7 +25,6 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Build wheel
       run: |
-        mkdir wheelhouse
         pip wheel --no-deps . -w wheelhouse
     - uses: actions/upload-artifact@v4
       with:
