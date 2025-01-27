@@ -27,6 +27,7 @@ generate = [
 brainsynth = [
     "resources/lh.white.smooth",
     "resources/rh.white.smooth",
+    "resources/cortex-int-lh.srf",
     "constants/lut/brainseg.lut",
     "constants/lut/brainseg_with_extracerebral.lut",
 ]
