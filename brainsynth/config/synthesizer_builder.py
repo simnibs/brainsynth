@@ -385,13 +385,22 @@ class DefaultSynth(SynthBuilder):
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
                 self.surface_deformation,
-                # RandTranslationTransform(
-                #     x_range=[-5, 5],
-                #     y_range=[-5, 5],
-                #     z_range=[-5, 5],
-                #     prob=0.5,
-                #     device=self.device,
-                # ),
+                # Noise on initial vertices
+                RandLinearTransform(
+                    max_rotation=5.0,
+                    max_scale=0.05,
+                    max_shear=0.05,
+                    relative_to_input=True,
+                    prob=0.5,
+                    device=self.device,
+                ),
+                RandTranslationTransform(
+                    x_range=[-3, 3],
+                    y_range=[-3, 3],
+                    z_range=[-3, 3],
+                    prob=0.5,
+                    device=self.device,
+                ),
                 skip_on_InputSelectorError=True,
             ),
         )
@@ -825,13 +834,22 @@ class XSubSynth(DefaultSynth):
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
                 self.surface_deformation,
-                # RandTranslationTransform(
-                #     x_range=[-5, 5],
-                #     y_range=[-5, 5],
-                #     z_range=[-5, 5],
-                #     prob=0.5,
-                #     device=self.device,
-                # ),
+                # Noise on initial vertices
+                RandLinearTransform(
+                    max_rotation=5.0,
+                    max_scale=0.05,
+                    max_shear=0.05,
+                    relative_to_input=True,
+                    prob=0.5,
+                    device=self.device,
+                ),
+                RandTranslationTransform(
+                    x_range=[-3, 3],
+                    y_range=[-3, 3],
+                    z_range=[-3, 3],
+                    prob=0.5,
+                    device=self.device,
+                ),
                 skip_on_InputSelectorError=True,
             ),
         )

@@ -196,9 +196,30 @@ class RandLinearTransform(RandomizableTransform):
         max_rotation,
         max_scale,
         max_shear,
+        relative_to_input: bool = False,
         device: None | torch.device = None,
         prob: float = 1.0,
     ):
+        """_summary_
+
+        Parameters
+        ----------
+        max_rotation : _type_
+            _description_
+        max_scale : _type_
+            _description_
+        max_shear : _type_
+            _description_
+        relative_to_input : bool, optional
+            Apply the transformations relative to the input grid, i.e., in a
+            coordinate system centered on the input grid. If true, this will
+            center the grid, apply then transformation, and undo the centering.
+            (default = False).
+        device : None | torch.device, optional
+            _description_, by default None
+        prob : float, optional
+            _description_, by default 1.0
+        """
         super().__init__(prob, device)
 
         if not self.should_apply_transform():
@@ -210,6 +231,7 @@ class RandLinearTransform(RandomizableTransform):
         self.max_scale = max_scale
         self.max_rotation = max_rotation
         self.max_shear = max_shear
+        self.relative_to_input = relative_to_input
 
         rotations = (
             (2 * self.max_rotation * torch.rand(3) - self.max_rotation)
@@ -278,9 +300,14 @@ class RandLinearTransform(RandomizableTransform):
         """`grid` has coordinates in the last dimension!"""
         if self.should_apply_transform():
             A = self.trans_inv if inverse else self.trans
-            return grid @ A.T
+            if self.relative_to_input:
+                gm = grid.mean(tuple(range(grid.ndim - 1)))
+                return ((grid - gm) @ A.T) + gm
+            else:
+                return grid @ A.T
         else:
             return grid
+
 
 
 class ScaleAndSquare(BaseTransform):
