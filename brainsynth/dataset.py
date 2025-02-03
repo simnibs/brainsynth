@@ -378,7 +378,7 @@ class PredictionDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         images: list | tuple[Path, str],
-        mni_transform: list | tuple[Path, str],
+        mni_transforms: list | tuple[Path, str],
         mni_direction: str = "mni2sub",
         mni_space: str = "mni152",
         hemi: str | None = None,
@@ -399,7 +399,7 @@ class PredictionDataset(torch.utils.data.Dataset):
             correctly preprocessed.
 
         """
-        assert len(images) == len(mni_transform)
+        assert len(images) == len(mni_transforms)
         assert mni_space in ("mni152", "mni305")
         assert mni_direction in {"mni2sub", "sub2mni"}
         self.hemi = (
@@ -411,7 +411,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         )
 
         self.images = images
-        self.mni_transform = mni_transform
+        self.mni_transform = mni_transforms
         self.mni_space = mni_space
         self.mni_direction = mni_direction
         self.conform = conform
@@ -495,7 +495,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         return _load_image(img, torch.float, return_affine=True)
 
     def __len__(self):
-        return len(self.subjects)
+        return len(self.images)
 
     def __getitem__(self, index):
         image, vox2mri = self.load_image(index)

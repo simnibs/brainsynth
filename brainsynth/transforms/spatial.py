@@ -1190,12 +1190,7 @@ class RandResolution(RandomizableTransform):
         small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
 
         # blur and downsample
-        # image = monai.transforms.GaussianSmooth(self.sigma)(image)
         image = self.gaussian_blur(image)
         image = GridSample(small_grid, self.out_size)(image)
-
-        # is this necessary?
-        # SYN_noisy = self.eliminate_negative_values(SYN_noisy)
-        # SYN_final = self.normalize_intensity(SYN_resized)
 
         return self.resize(image)
