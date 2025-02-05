@@ -4,9 +4,10 @@ from brainsynth.constants import IMAGE
 
 def subjects_subset_str(p: Path, ds: str, subset: None | str = None):
     if subset is None:
-        return p / f"{ds}.txt"
+        dd = p / f"{ds}.txt"
     else:
-        return p / f"{ds}.{subset}.txt"
+        dd = p / f"{ds}.{subset}.txt"
+    return dd if dd.exists() else None
 
 
 # ds_config = DefaultDatasetConfig(
@@ -69,6 +70,7 @@ class DatasetConfig:
         subject_subset: None | str,
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
+        exclude_subjects: None | str = None,
         **kwargs,
     ):
         known_datasets = (
@@ -123,6 +125,7 @@ class DatasetConfig:
                 root_dir=root_dir,
                 name=ds,
                 subjects=subjects_subset_str(subject_dir, ds, subject_subset),
+                exclude_subjects=subjects_subset_str(subject_dir, ds, exclude_subjects) if exclude_subjects is not None else None,
                 images=use_images[ds],
                 **kwargs,
             )

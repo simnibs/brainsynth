@@ -60,6 +60,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_surface: dict | None = {},
         initial_surface: dict | None = {},
         randomize_hemisphere: bool = False,
+        exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
     ):
         """
@@ -110,7 +111,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             collate the data if some subjects have masks and others not.)
         """
         self.load_mask = load_mask
-        self._initialize_io_settings(root_dir, name, ds_structure, subjects)
+        self._initialize_io_settings(root_dir, name, ds_structure, subjects, exclude_subjects)
         self._initialize_image_settings(images)
 
         self.randomize_hemisphere = randomize_hemisphere
@@ -139,17 +140,24 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             case _:
                 raise ValueError("Wrong type for `xdataset`")
 
-    def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects):
+    def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects, exclude_subjects):
         self.ds_dir = Path(ds_dir)
         self.name = name
         self.ds_structure = ds_structure
 
         # Subjects
-        self.subjects = (
+        subjects = (
             load_dataset_subjects(subjects)
             if isinstance(subjects, (Path, str))
             else subjects
         )
+        exclude = (
+            load_dataset_subjects(exclude_subjects)
+            if isinstance(exclude_subjects, (Path, str))
+            else exclude_subjects
+        )
+
+        self.subjects = subjects if exclude is None else np.setdiff1d(subjects, exclude)
         self.n_subjects = len(self.subjects)
 
         # Filename generators
@@ -181,7 +189,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             kwargs = dict(
                 hemispheres=SURFACE.hemispheres,
                 types=SURFACE.types,
-                resolution=6,
+                resolution=7,
                 name="target",
             )
             if isinstance(target_surface_kwargs, dict):
@@ -287,7 +295,8 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         return {
             h: {
                 t: torch.load(
-                    self.get_surface_filename(subject, self.target_surface_files[h, t])
+                    self.get_surface_filename(subject, self.target_surface_files[h, t]),
+                    weights_only=True,
                 )
                 for t in self.target_surface_kwargs["types"]
             }
@@ -298,14 +307,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         if (t := self.initial_surface_kwargs["types"]) is not None:
             return {
                 h: torch.load(
-                    self.get_surface_filename(subject, self.initial_surface_files[h, t])
+                    self.get_surface_filename(subject, self.initial_surface_files[h, t]),
+                    weights_only=True,
                 )
                 for h in hemi
             }
         else:
             return {
                 h: torch.load(
-                    self.get_surface_filename(subject, self.initial_surface_files[h])
+                    self.get_surface_filename(subject, self.initial_surface_files[h]),
+                    weights_only=True,
                 )
                 for h in hemi
             }
