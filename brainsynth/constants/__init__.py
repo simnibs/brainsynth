@@ -186,30 +186,6 @@ class ImageSettings:
 # SURFACES
 # ---------------------------
 
-
-# class SurfaceFiles:
-#     def __init__(self, hemispheres, types, resolutions):
-#         self.template = make_surface_dict(hemispheres, None, resolutions, "template")
-#         self.template_niftyreg = make_surface_dict(hemispheres, None, resolutions, "template.niftyreg")
-
-#         self.target = make_surface_dict(hemispheres, types, resolutions, "target")
-#         self.decoupled_target = make_surface_dict(hemispheres, types, resolutions, "target-decoupled")
-
-#         self.prediction = make_surface_dict(hemispheres, types, resolutions, "prediction")
-
-        # for h in hemispheres:
-        #     for r in resolutions:
-        #         for t in types:
-        #             k = (h, t, r)
-        #             self.prediction[k] = f"{h}.{t}.{r}.prediction.pt"
-        #             self.target[k] = f"{h}.{t}.{r}.target.pt"
-        #             self.decoupled_target[k] = f"{h}.{t}.{r}.target-decoupled.pt"
-        #         self.template[(h, r)] = f"{h}.{r}.template.pt"
-        #         self.template_niftyreg[(h, r)] = f"{h}.{r}.template.niftyreg.pt"
-        #         self.template_prediction_white[(h, r)] = f"{h}.white.{r}.prediction.pt"
-        #         self.template_prediction_pial[(h, r)] = f"{h}.pial.{r}.prediction.pt"
-
-
 class SurfaceSettings:
     def __init__(self):
         self.hemispheres: tuple[str, str] = ("lh", "rh")

@@ -27,7 +27,7 @@ class ResolutionSamplerDefault(BaseTransform):
                 thickness[idx] = torch.minimum(
                     resolution[idx], 4.0 + 2.0 * torch.rand(1)
                 )
-            elif r < 0.67:
+            elif r < 0.66:
                 # low-field: stock sequences (always axial)
                 resolution = torch.tensor([1.3, 1.3, self.low_field_stock]) + 0.4 * torch.rand(3)
                 thickness = resolution.clone()

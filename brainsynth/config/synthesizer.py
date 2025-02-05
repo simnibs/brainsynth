@@ -58,7 +58,7 @@ class SynthesizerConfig(PredictionConfig):
         photo_mode: bool = False,
         photo_spacing_range: list[float] | tuple[float, float] = (2.0, 7.0),
         photo_thickness: float = 0.001,
-        alternative_images: None | list[str] | tuple = None,
+        selectable_images: None | list[str] | tuple = None,
         device: str | torch.device = "cuda",
     ):
         super().__init__(builder, out_size, out_center_str, align_corners, device)
@@ -79,4 +79,4 @@ class SynthesizerConfig(PredictionConfig):
 
         # if alternative_images is not None:
         # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)
-        self.alternative_images = alternative_images if alternative_images is not None else []
+        self.selectable_images = selectable_images if selectable_images is not None else []

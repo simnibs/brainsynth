@@ -271,7 +271,7 @@ class DefaultSynth(SynthBuilder):
         )
 
     def build_intensity_transform(self):
-        self.extracerebral = PipelineModule(
+        self.skullstrip = PipelineModule(
             SwitchTransform,
             IdentityTransform(),
             # skull strip
@@ -306,7 +306,7 @@ class DefaultSynth(SynthBuilder):
                 device=self.device,
             ),
             RandGammaTransform(prob=0.33),
-            self.extracerebral,
+            self.skullstrip,
             self.image_deformation,  # Transform to output FOV
             RandBiasfield(
                 self.config.out_size,
@@ -430,7 +430,8 @@ class OnlySynthIso(OnlySynth):
         return IdentityTransform()
 
 
-class OnlySelect(OnlySynth):
+
+class OnlySelectWithSkullstrip(OnlySynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -446,7 +447,7 @@ class OnlySelect(OnlySynth):
 
         state["selectable_images"] = Pipeline(
             SelectState("available_images"),
-            Intersection(self.config.alternative_images),
+            Intersection(self.config.selectable_images),
             unpack_inputs=False,
         )
         return state
@@ -464,23 +465,63 @@ class OnlySelect(OnlySynth):
                     SelectState("selectable_images"),
                 ),
             ),
+            self.skullstrip,
             self.image_deformation,  # Transform to output FOV
-            # RandBiasfield(
-            #     self.config.out_size,
-            #     scale_min=0.02,
-            #     scale_max=0.04,
-            #     std_min=0.1,
-            #     std_max=0.6,
-            #     photo_mode=self.config.photo_mode,
-            #     prob=0.9,
-            #     device=self.device,
-            # ),
             self.resolution_augmentation(),
             self.intensity_normalization,
         )
 
 
+class OnlySelect(OnlySynth):
+    def __init__(self, config: SynthesizerConfig) -> None:
+        """This pipeline includes
+
+            - selection of an image as the input image for training
+            - resolution augmentation from DefaultSynth
+
+        and thus *no* spatial augmentation (only extracting a particular FOV).
+        """
+        super().__init__(config)
+
+    def build_state(self):
+        state = super().build_state()
+
+        state["selectable_images"] = Pipeline(
+            SelectState("available_images"),
+            Intersection(self.config.selectable_images),
+            unpack_inputs=False,
+        )
+        return state
+
+    def build_intensity_transform(self):
+        self.intensity_normalization = IntensityNormalization()
+
+    def build_image(self):
+        """No intensity augmentation."""
+
+        return Pipeline(
+            # Select one of the available (valid) images
+            PipelineModule(
+                SelectImage,
+                PipelineModule(
+                    RandomChoice,
+                    # equal probability of selecting each image
+                    SelectState("selectable_images"),
+                ),
+            ),
+            self.image_deformation,  # Transform to output FOV
+            self.resolution_augmentation(),
+            self.intensity_normalization,
+        )
+
+
+
 class OnlySelectIso(OnlySelect):
+    def resolution_augmentation(self):
+        return IdentityTransform()
+
+
+class OnlySelectWithSkullstripIso(OnlySelectWithSkullstrip):
     def resolution_augmentation(self):
         return IdentityTransform()
 
@@ -546,7 +587,7 @@ class SynthOrSelectImage(DefaultSynth):
 
         state["selectable_images"] = Pipeline(
             SelectState("available_images"),
-            Intersection(self.config.alternative_images),
+            Intersection(self.config.selectable_images),
             unpack_inputs=False,
         )
 
@@ -668,7 +709,7 @@ class XSubSynth(DefaultSynth):
             ),
             selectable_images=Pipeline(
                 SelectState("available_images"),
-                Intersection(self.config.alternative_images),
+                Intersection(self.config.selectable_images),
                 unpack_inputs=False,
             ),
             # the size of the input image(s)
