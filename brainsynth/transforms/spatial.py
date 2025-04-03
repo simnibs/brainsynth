@@ -1120,8 +1120,8 @@ class RandResolution(RandomizableTransform):
 
     def __init__(
         self,
-        out_size,
-        in_res,
+        out_size: torch.Tensor | tuple,
+        in_res: torch.Tensor | tuple,
         res_sampler: str = "ResolutionSamplerDefault",
         photo_mode: bool = False,
         photo_spacing: float | None = None,
@@ -1132,7 +1132,7 @@ class RandResolution(RandomizableTransform):
     ):
         super().__init__(prob, device)
 
-        self.in_res = in_res
+        self.in_res = torch.as_tensor(in_res, device=self.device)
         self.out_size = torch.as_tensor(out_size, device=self.device)
         self.photo_mode = photo_mode
         self.photo_spacing = photo_spacing
@@ -1171,6 +1171,39 @@ class RandResolution(RandomizableTransform):
             self.sigma = None
             self.gaussian_blur = None
 
+    def compute_voxel_indices(self, image, ds_size):
+        nones = [None] * len(image.shape[1:])
+        sv = tuple(
+            torch.arange(s, dtype=torch.float, device=self.device) for s in ds_size
+        )
+        ds_factor = self.out_size/ds_size
+
+        small_voxel = torch.stack(torch.meshgrid(*sv, indexing="ij"))
+        out_voxel = self.resize(small_voxel)
+
+        # Distance from each *upsampled* voxel to the closest voxel in the
+        # *original* (downsampled) image
+        # (along each dim)
+        dist_dim = (out_voxel - out_voxel.round()).abs() * ds_factor[:, *nones]
+        # (overall)
+        # dist_euc = dist_dim.pow(2).sum(0,keepdims=True).sqrt()
+
+        return torch.cat((image, dist_dim))
+
+        # out_voxel = out_voxel.round()
+        # out_voxel = out_voxel / (ds_size[:, *nones] - 1.0)
+
+        # # np.linspace(0,1,176)
+        # freq = tuple(
+        #     torch.cos(
+        #         (upsize-1.0) / (upsize/downsize) * torch.pi * torch.linspace(0.0, 1.0, upsize, device=self.device)
+        #         ) for downsize,upsize in zip(ds_size, self.out_size)
+        # )
+        # freq_grid = torch.stack(torch.meshgrid(*freq, indexing="ij"))
+        # return torch.cat((image, freq_grid), dim=0)
+
+        # return torch.cat((image, out_voxel), dim=0)
+
     def forward(self, image):
         if not self.should_apply_transform():
             return image
@@ -1178,19 +1211,9 @@ class RandResolution(RandomizableTransform):
         # sanity check
         # assert tuple(self.out_size) == tuple(image.size()[-3:])
 
-        ds_size = self.out_size * self.in_res / self.out_res
-        ds_size = ds_size.to(torch.int)
+        ds_size = torch.round(self.out_size * self.in_res / self.out_res).to(torch.int)
 
-        factors = ds_size / self.out_size
-        delta = (1.0 - factors) / (2.0 * factors)
-        hv = tuple(
-            torch.arange(d, d + ns / f, 1 / f, device=self.device)[:ns]
-            for d, ns, f in zip(delta, ds_size, factors)
-        )
-        small_grid = torch.stack(torch.meshgrid(*hv, indexing="ij"), dim=-1)
+        # blur, downsample, upsample (back to original size)
+        image = self.resize(Resize(ds_size)(self.gaussian_blur(image)))
 
-        # blur and downsample
-        image = self.gaussian_blur(image)
-        image = GridSample(small_grid, self.out_size)(image)
-
-        return self.resize(image)
+        return image

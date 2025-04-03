@@ -58,13 +58,13 @@ class SynthesizeFromMultivariateNormal(BaseTransform):
 class SynthesizeIntensityImage(BaseTransform):
     def __init__(
         self,
-        mu_offset: float,
-        mu_scale: float,
-        sigma_offset: float,
-        sigma_scale: float,
-        # pv_sigma: float | list[float],
-        pv_sigma_range: list[float] = [0.25, 1.0],
-        pv_tail_length: float = 2.0,
+        mu_low: float,
+        mu_high: float,
+        sigma_global_scale: float,
+        sigma_local_scale: float,
+        pv_sigma_range: list[float] = [0.5, 1.0],
+        pv_tail_length: float = 3.0,
+        pv_from_distances: bool = True,
         photo_mode: bool = False,
         min_cortical_contrast: float = 0.0,  # 25.0
         gen_labels_dist_encoded: bool = True,
@@ -74,8 +74,9 @@ class SynthesizeIntensityImage(BaseTransform):
         super().__init__(device)
         self.photo_mode = photo_mode
         self.min_cortical_contrast = min_cortical_contrast
+        self.pv_from_distances = pv_from_distances
 
-        self.sample_gaussians(mu_offset, mu_scale, sigma_offset, sigma_scale)
+        self.sample_gaussians(mu_low, mu_high, sigma_global_scale, sigma_local_scale)
 
         # sample smoothing
         pv_sigma = pv_sigma_range[0] + (
@@ -94,34 +95,36 @@ class SynthesizeIntensityImage(BaseTransform):
         self.gen_labels_dist_encoded = gen_labels_dist_encoded
         self.gen_labels_dist_max = gen_labels_dist_max
 
-    def sample_gaussians(self, mu_offset, mu_scale, sigma_offset, sigma_scale):
-        # Generate Gaussians
-        mu = torch.zeros(gl.n_labels, device=self.device)
-        sigma = torch.zeros(gl.n_labels, device=self.device)
-
+    def sample_gaussians(self, mu_low, mu_high, sigma_offset, sigma_scale):
         n = gl.label_range[1] - gl.label_range[0]
-        slc = slice(*gl.label_range)
+        label_slice = slice(*gl.label_range)
 
-        mu[slc] = mu_offset + mu_scale * torch.rand(n, device=self.device)
-        sigma[slc] = sigma_offset + sigma_scale * torch.rand(n, device=self.device)
+        # Generate Gaussians
+        with torch.device(self.device):
+            mu = torch.zeros(gl.n_labels)
+            # mu[label_slice] = mu_offset + mu_scale * torch.rand(n)
+            mu[label_slice] = torch.distributions.Uniform(mu_low, mu_high).sample((n,))
 
-        # # draw GM mean around WM
-        # std = 7.0 * sigma_scale
-        # while True:
-        #     new_mu = mu[gl.white] + torch.randn(1, device=self.device) * std
-        #     if mu_offset <= new_mu <= mu_offset + mu_scale:
-        #         mu[gl.gray] = new_mu
-        #         break
+            sigma = torch.zeros(gl.n_labels)
+            sigma[label_slice] = torch.rand(1) * sigma_offset + sigma_scale * torch.rand(n)
 
-        # scale sigma by mu but make sure we don't kill all noise
-        # mu_max = mu_offset + mu_scale
-        # scale_factor = (
-        #     torch.minimum(
-        #         mu[slc] + 3 * mu_offset, torch.tensor(mu_max, device=self.device)
-        #     )
-        #     / mu_max
-        # )
-        # sigma[slc] *= scale_factor
+            # T1w-like contrast!
+
+            # mu[gl.white] = 103.28 + 0.1 * 103.28  * ( torch.rand(1, device=self.device) - 0.5 )
+            # mu[gl.gray] = 73.80 + 0.1 * 73.80  * ( torch.rand(1, device=self.device) - 0.5 )
+            # mu[gl.csf] = 47.49 + 0.1 * 47.49  * ( torch.rand(1, device=self.device) - 0.5 )
+
+            # subcortical structures are always similar to GM
+
+            # 5   Left-Cerebellum-White-Matter            220 248 164 0
+            # 6   Left-Cerebellum-Cortex                  230 148  34 0
+            # 7   Left-Thalamus                             0 118  14 0
+            # 8   Left-Caudate                            122 186 220 0
+            # 9   Left-Putamen                            236  13 176 0
+            # 10  Left-Pallidum
+            # uni = torch.distributions.Uniform(-0.5, 0.5)
+            # mu[5] = mu[gl.white] + 0.25 * mu[gl.white]  * uni.sample((1,))
+            # mu[6:11] = mu[gl.gray] + 0.25 * mu[gl.gray] * uni.sample((5,))
 
         # set the background to zero in photo mode
         if self.photo_mode:
@@ -145,27 +148,43 @@ class SynthesizeIntensityImage(BaseTransform):
         # --------------------------
         # mix parameters
 
-        frac = torch.linspace(0, 1, 50, device=self.device)
+        if self.pv_from_distances:
 
-        mu[gl.pv.lesion : gl.pv.white] = mu[gl.lesion] + frac * (
-            mu[gl.white] - mu[gl.lesion]
-        )
-        mu[gl.pv.white : gl.pv.gray] = mu[gl.white] + frac * (
-            mu[gl.gray] - mu[gl.white]
-        )
-        mu[gl.pv.gray : gl.pv.csf] = mu[gl.gray] + frac * (mu[gl.csf] - mu[gl.gray])
-        mu[gl.pv.csf] = mu[gl.csf]
+            frac = torch.linspace(0, 1, 50, device=self.device)
 
-        sigma[gl.pv.lesion : gl.pv.white] = sigma[gl.lesion] + frac * (
-            sigma[gl.white] - sigma[gl.lesion]
-        )
-        sigma[gl.pv.white : gl.pv.gray] = sigma[gl.white] + frac * (
-            sigma[gl.gray] - sigma[gl.white]
-        )
-        sigma[gl.pv.gray : gl.pv.csf] = sigma[gl.gray] + frac * (
-            sigma[gl.csf] - sigma[gl.gray]
-        )
-        sigma[gl.pv.csf] = sigma[gl.csf]
+            mu[gl.pv.lesion : gl.pv.white] = mu[gl.lesion] + frac * (
+                mu[gl.white] - mu[gl.lesion]
+            )
+            mu[gl.pv.white : gl.pv.gray] = mu[gl.white] + frac * (
+                mu[gl.gray] - mu[gl.white]
+            )
+            mu[gl.pv.gray : gl.pv.csf] = mu[gl.gray] + frac * (mu[gl.csf] - mu[gl.gray])
+            mu[gl.pv.csf] = mu[gl.csf]
+
+            sigma[gl.pv.lesion : gl.pv.white] = sigma[gl.lesion] + frac * (
+                sigma[gl.white] - sigma[gl.lesion]
+            )
+            sigma[gl.pv.white : gl.pv.gray] = sigma[gl.white] + frac * (
+                sigma[gl.gray] - sigma[gl.white]
+            )
+            sigma[gl.pv.gray : gl.pv.csf] = sigma[gl.gray] + frac * (
+                sigma[gl.csf] - sigma[gl.gray]
+            )
+            sigma[gl.pv.csf] = sigma[gl.csf]
+        else:
+            lesion_to_white = gl.pv.lesion + (gl.pv.white-gl.pv.lesion)//2
+            white_to_gray = gl.pv.white + (gl.pv.gray-gl.pv.white)//2
+            gray_to_csf = gl.pv.gray + (gl.pv.csf-gl.pv.gray)//2
+
+            mu[gl.pv.lesion:lesion_to_white] = mu[gl.lesion]
+            mu[lesion_to_white:white_to_gray] = mu[gl.white]
+            mu[white_to_gray:gray_to_csf] = mu[gl.gray]
+            mu[gray_to_csf:gl.pv.csf + 1] = mu[gl.csf]
+
+            sigma[gl.pv.lesion:lesion_to_white] = sigma[gl.lesion]
+            sigma[lesion_to_white:white_to_gray] = sigma[gl.white]
+            sigma[white_to_gray:gray_to_csf] = sigma[gl.gray]
+            sigma[gray_to_csf:gl.pv.csf + 1] = sigma[gl.csf]
 
         self.mu = mu
         self.sigma = sigma
@@ -241,28 +260,18 @@ class SynthesizeIntensityImage(BaseTransform):
             img_blur = self.gaussian_blur(img)
             # we explicitly model PV in some areas so use that instead of the
             # blurred image.
-
-            explicit_pv_mask = (label >= gl.pv.lesion) & (label <= gl.pv.csf)
-            img_blur[explicit_pv_mask] = img[explicit_pv_mask]
+            if self.pv_from_distances:
+                explicit_pv_mask = (label >= gl.pv.lesion) & (label <= gl.pv.csf)
+                img_blur[explicit_pv_mask] = img[explicit_pv_mask]
         else:
             img_blur = img
         img_blur += self.sigma[label] * torch.randn(label.shape, device=self.device)
         img_blur[img_blur < 0] = 0
 
         return img_blur
-        # return self.mu[label] + self.sigma[label] * torch.randn(
-        #     label.shape, device=self.device
-        # )
 
     def forward(self, label):
         return self.sample_image(label)
-        # image = self.sample_image(label)
-        # image[image < lut.Unknown] = lut.Unknown # clip
-        # return image
-
-
-# trans = RandSaltAndPepperNoise(gl.kmeans, prob = 0.1)
-# trans(image, label_image)
 
 
 class RandSaltAndPepperNoise(RandomizableTransform):
@@ -322,9 +331,17 @@ class IntensityNormalization(BaseTransform):
         self.high = high
 
     def forward(self, image):
-        ql = image.quantile(self.low)
-        qu = image.quantile(self.high)
-        return torch.clip((image - ql) / (qu - ql), 0.0, 1.0)
+        C,*spatial_dims = image.shape
+        ones = tuple(1 for _ in spatial_dims)
+        ql = image.reshape(C, -1).quantile(self.low, dim=-1)
+        qu = image.reshape(C, -1).quantile(self.high, dim=-1)
+
+        image = image - ql.reshape(C, *ones)
+        span = qu - ql
+        valid = span > 0.0
+        image[valid] = image[valid] / span.reshape(C, *ones)[valid]
+
+        return image.clamp(0.0, 1.0)
 
 
 class RandGaussianNoise(RandomizableTransform):

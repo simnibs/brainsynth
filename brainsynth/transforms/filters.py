@@ -25,20 +25,20 @@ class GaussianSmooth(BaseTransform):
             else sigma
         )
         assert len(sigma) == spatial_dims
+        self.sigma = sigma
 
-        self.kernels = self._compute_gaussian_kernels(sigma, tail_length)
+        self.kernels = self._compute_gaussian_kernels()
         self.conv = getattr(torch.nn.functional, f"conv{spatial_dims}d")
 
-    def _compute_gaussian_kernels(self, sigma: list | tuple, tail_length: float):
+    def _compute_gaussian_kernels(self):
         return tuple(
-            self._compute_gaussian_kernel(s, tail_length, dim=i)
-            if s > 0.0 else None for i, s in enumerate(sigma)
+            self._compute_gaussian_kernel(s, dim=i)
+            if s > 0.0 else None for i, s in enumerate(self.sigma)
         )
 
-    def _compute_gaussian_kernel(self, s: float, tail_length: float, dim: int):
-        tail = int(max(round(s * tail_length), 1.0))
+    def _compute_gaussian_kernel(self, s: float, dim: int):
+        tail = int(max(round(s * self.tail_length), 1.0))
         x = torch.arange(-tail, tail + 1, device=self.device)
-
         N = torch.distributions.Normal(0.0, s)
         kernel = N.log_prob(x).exp()
         kernel /= kernel.sum()

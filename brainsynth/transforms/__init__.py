@@ -123,6 +123,18 @@ class SelectState(InputSelector):
         return super().forward(mapped_inputs[self.image])
 
 
+class SelectOutput(InputSelector):
+    def __init__(self, *args, **kwargs):
+        """Convenience class to select from the output entry in the mapped
+        inputs dictionary.
+        """
+        super().__init__(*args, **kwargs)
+        self.image = "output"
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[self.image])
+
+
 class SelectSurface(InputSelector):
     def __init__(self, *args, **kwargs):
         """Convenience class to select surfaces from the mapped inputs
