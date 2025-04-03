@@ -46,19 +46,20 @@ class Synthesizer(torch.nn.Module):
             mikeys.image: self.ensure_device(images),
             mikeys.initial_vertices: self.ensure_device(initial_vertices),
             mikeys.surface: self.ensure_device(surfaces),
-            mikeys.state: {},
             mikeys.affine: self.ensure_device(affines),
+            mikeys.state: {},
+            "output": {},
         }
 
         # Build the pipelines
         state_pipeline, output_pipeline = self.builder.build()
 
         # Set the internal state
-        mapped_inputs["state"] = self.execute(
+        _ = self.execute(
             state_pipeline, mapped_inputs, mapped_inputs[mikeys.state]
         )
 
         # Generate the output
-        out = self.execute(output_pipeline, mapped_inputs)
+        out = self.execute(output_pipeline, mapped_inputs, mapped_inputs["output"])
 
         return self.unpack(out) if unpack else out

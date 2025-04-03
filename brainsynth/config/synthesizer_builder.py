@@ -1,7 +1,6 @@
 from functools import partial
 import torch
 
-from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
 from brainsynth import resources_dir
@@ -20,6 +19,9 @@ class SynthBuilder:
         raise NotImplementedError
 
     def build_intensity_transform(self):
+        raise NotImplementedError
+
+    def build_resolution_transform(self):
         raise NotImplementedError
 
     def build_state(self):
@@ -54,6 +56,7 @@ class SynthBuilder:
         # The following relies (may rely) on the state
         self.build_spatial_transform()
         self.build_intensity_transform()
+        self.build_resolution_transform()
 
         output = self.build_output()
 
@@ -290,18 +293,31 @@ class DefaultSynth(SynthBuilder):
         )
         self.intensity_normalization = IntensityNormalization()
 
+    def build_resolution_transform(self):
+        self.resolution_augmentation = PipelineModule(
+            RandResolution,
+            self.config.out_size,
+            self.config.in_res,
+            photo_mode=self.config.photo_mode,
+            photo_spacing=SelectState("photo_spacing"),
+            photo_thickness=self.config.photo_thickness,
+            prob=0.75,
+            device=self.device,
+        )
+
     def build_image(self):
         return Pipeline(
             # Synthesize image
             SelectImage("generation_labels_dist"),
             SynthesizeIntensityImage(
-                mu_offset=25.0,
-                mu_scale=200.0,
-                sigma_offset=2.0,
-                sigma_scale=7.5,
-                pv_sigma_range=[0.25, 1.5],
+                mu_low=25.0,
+                mu_high=200.0,
+                sigma_global_scale=4.0,
+                sigma_local_scale=2.5,
+                pv_sigma_range=[0.5, 1.2],
+                pv_tail_length=3.0,
+                pv_from_distances=False,
                 min_cortical_contrast=10.0,
-                pv_tail_length=2.0,
                 photo_mode=self.config.photo_mode,
                 device=self.device,
             ),
@@ -329,54 +345,12 @@ class DefaultSynth(SynthBuilder):
             #     prob=0.5,
             #     device=self.device,
             # ),
-            self.resolution_augmentation(),
+            # self.resolution_augmentation,
             self.intensity_normalization,
         )
 
-    def resolution_augmentation(self):
-        return PipelineModule(
-            RandResolution,
-            self.config.out_size,
-            self.config.in_res,
-            photo_mode=self.config.photo_mode,
-            photo_spacing=SelectState("photo_spacing"),
-            photo_thickness=self.config.photo_thickness,
-            prob=0.75,
-            device=self.device,
-        )
-
-    def build_output(self):
+    def build_surfaces(self):
         return dict(
-            t1w=Pipeline(
-                SelectImage("t1w"),
-                self.image_deformation,
-                self.intensity_normalization,
-                # This pipeline is allowed to fail if the input is not found
-                skip_on_InputSelectorError=True,
-            ),
-            t1w_mask=Pipeline(
-                SelectImage("t1w_mask"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
-            # t2w=Pipeline(
-            #     SelectImage("t2w"),
-            #     self.image_deformation,
-            #     self.intensity_normalization,
-            #     skip_on_InputSelectorError=True,
-            # ),
-            # t2w_mask=Pipeline(
-            #     SelectImage("t2w_mask"),
-            #     self.image_deformation,
-            #     skip_on_InputSelectorError=True,
-            # ),
-            # brainseg=Pipeline(
-            #     SelectImage("brainseg"),
-            #     self.image_deformation,
-            #     OneHotEncoding(self.config.segmentation_num_labels),
-            #     skip_on_InputSelectorError=True,
-            # ),
-            image=self.build_image(),
             surface=Pipeline(
                 SelectSurface(),
                 self.surface_deformation,
@@ -405,6 +379,56 @@ class DefaultSynth(SynthBuilder):
             ),
         )
 
+    def build_images(self):
+        return dict(
+            t1w=Pipeline(
+                SelectImage("t1w"),
+                self.skullstrip,
+                self.image_deformation,
+                self.intensity_normalization,
+                # This pipeline is allowed to fail if the input is not found
+                skip_on_InputSelectorError=True,
+            ),
+            t1w_mask=Pipeline(
+                SelectImage("t1w_mask"),
+                self.skullstrip,
+                self.image_deformation,
+                skip_on_InputSelectorError=True,
+            ),
+            # t2w=Pipeline(
+            #     SelectImage("t2w"),
+            #     self.image_deformation,
+            #     self.intensity_normalization,
+            #     skip_on_InputSelectorError=True,
+            # ),
+            # t2w_mask=Pipeline(
+            #     SelectImage("t2w_mask"),
+            #     self.image_deformation,
+            #     skip_on_InputSelectorError=True,
+            # ),
+            # brainseg=Pipeline(
+            #     SelectImage("brainseg"),
+            #     self.image_deformation,
+            #     OneHotEncoding(self.config.segmentation_num_labels),
+            #     skip_on_InputSelectorError=True,
+            # ),
+            brain_dist_map=Pipeline(
+                SelectImage("brain_dist_map"),
+                self.image_deformation,
+                skip_on_InputSelectorError=True,
+            ),
+        )
+
+    def build_output(self):
+        return dict(
+            image_hires = self.build_image(),
+            image = Pipeline(
+                SelectOutput("image_hires"),
+                self.resolution_augmentation,
+            ),
+            **self.build_images(),
+            **self.build_surfaces(),
+        )
 
 class OnlySynth(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
@@ -426,12 +450,11 @@ class OnlySynth(DefaultSynth):
 
 
 class OnlySynthIso(OnlySynth):
-    def resolution_augmentation(self):
-        return IdentityTransform()
+    def build_resolution_transform(self):
+        self.resolution_augmentation = IdentityTransform()
 
 
-
-class OnlySelectWithSkullstrip(OnlySynth):
+class OnlySelect(OnlySynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -467,12 +490,40 @@ class OnlySelectWithSkullstrip(OnlySynth):
             ),
             self.skullstrip,
             self.image_deformation,  # Transform to output FOV
-            self.resolution_augmentation(),
+            # self.resolution_augmentation,
             self.intensity_normalization,
         )
 
+    def build_images(self):
+        # return {}
+        return dict(
+            brain_dist_map=Pipeline(
+                SelectImage("brain_dist_map"),
+                self.image_deformation,
+                skip_on_InputSelectorError=True,
+            ),
+            t1w=Pipeline(
+                SelectImage("t1w"),
+                self.skullstrip,
+                self.image_deformation,
+                self.intensity_normalization,
+                skip_on_InputSelectorError=True,
+            ),
+        )
 
-class OnlySelect(OnlySynth):
+    def build_output(self):
+        return dict(
+            image_hires = self.build_image(),
+            image = Pipeline(
+                SelectOutput("image_hires"),
+                self.resolution_augmentation,
+            ),
+            **self.build_images(),
+            **self.build_surfaces(),
+        )
+
+
+class OnlySelectNoSkullStrip(OnlySelect):
     def __init__(self, config: SynthesizerConfig) -> None:
         """This pipeline includes
 
@@ -483,48 +534,18 @@ class OnlySelect(OnlySynth):
         """
         super().__init__(config)
 
-    def build_state(self):
-        state = super().build_state()
-
-        state["selectable_images"] = Pipeline(
-            SelectState("available_images"),
-            Intersection(self.config.selectable_images),
-            unpack_inputs=False,
-        )
-        return state
-
     def build_intensity_transform(self):
+        # remove skull-stripping
+        self.skullstrip = IdentityTransform()
         self.intensity_normalization = IntensityNormalization()
 
-    def build_image(self):
-        """No intensity augmentation."""
-
-        return Pipeline(
-            # Select one of the available (valid) images
-            PipelineModule(
-                SelectImage,
-                PipelineModule(
-                    RandomChoice,
-                    # equal probability of selecting each image
-                    SelectState("selectable_images"),
-                ),
-            ),
-            self.image_deformation,  # Transform to output FOV
-            self.resolution_augmentation(),
-            self.intensity_normalization,
-        )
-
-
+class OnlySelectNoSkullStripIso(OnlySelectNoSkullStrip):
+    def build_resolution_transform(self):
+        self.resolution_augmentation = IdentityTransform()
 
 class OnlySelectIso(OnlySelect):
-    def resolution_augmentation(self):
-        return IdentityTransform()
-
-
-class OnlySelectWithSkullstripIso(OnlySelectWithSkullstrip):
-    def resolution_augmentation(self):
-        return IdentityTransform()
-
+    def build_resolution_transform(self):
+        self.resolution_augmentation = IdentityTransform()
 
 class OnlySynthIsoT1w(OnlySynthIso):
     def build_intensity_transform(self):
@@ -600,10 +621,10 @@ class SynthOrSelectImage(DefaultSynth):
                     Pipeline(
                         SelectImage("generation_labels_dist"),
                         SynthesizeIntensityImage(
-                            mu_offset=25.0,
-                            mu_scale=200.0,
-                            sigma_offset=0.0,
-                            sigma_scale=10.0,
+                            mu_low=25.0,
+                            mu_high=200.0,
+                            sigma_global_scale=0.0,
+                            sigma_local_scale=10.0,
                             pv_sigma_range=[0.1, 1.5],
                             min_cortical_contrast=20.0,
                             photo_mode=self.config.photo_mode,
@@ -637,7 +658,7 @@ class SynthOrSelectImage(DefaultSynth):
             #     prob=0.9,
             #     device=self.device,
             # ),
-            self.resolution_augmentation(),
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
 

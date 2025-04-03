@@ -93,19 +93,19 @@ class ImageData:
 #   28 is -5
 #   128 is 0
 #   228 is 5.
-t_dist_map = lambda x: (x-128) / 20
+t_dist_map = lambda x: (x-128.0) / 20.0
 
 # mni_reg* are saved as world coordinates * 100
 # stored as int16
-t_mni_reg = lambda x: x / 100
+t_mni_reg = lambda x: x / 100.0
 
 # brain_dist_map is saved as distance * 10 and saturates at 25.5 mm
 # stored as uint8
-t_brain_dist_map = lambda x: x / 10
+t_brain_dist_map = lambda x: x / 10.0
 
 # mni152* are saved as *voxel* coordinates * 100
 # stored as int16
-t_mni152_reg = lambda x: x / 100
+t_mni152_reg = lambda x: x / 100.0
 
 class ImageSettings:
     def __init__(self):
