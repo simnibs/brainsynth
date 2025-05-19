@@ -16,7 +16,9 @@ hemispheres = ("lh", "rh")
 MappedInputKeys = namedtuple(
     "MappedInputKeys", ["image", "surface", "initial_vertices", "state", "affine"]
 )
-mapped_input_keys = MappedInputKeys("image", "surface", "initial_vertices", "state", "affine")
+mapped_input_keys = MappedInputKeys(
+    "image", "surface", "initial_vertices", "state", "affine"
+)
 
 
 # ---------------------------
@@ -80,6 +82,7 @@ Images = namedtuple(
     ),
 )
 
+
 @dataclass
 class ImageData:
     filename: Path | str
@@ -87,13 +90,14 @@ class ImageData:
     transform: Callable | None = None
     defacingmask: None | str = None
 
+
 # distance maps (clipped at [-5, 5] mm) are encoded as
 #   distance * 20 + 128
 # so
 #   28 is -5
 #   128 is 0
 #   228 is 5.
-t_dist_map = lambda x: (x-128.0) / 20.0
+t_dist_map = lambda x: (x - 128.0) / 20.0
 
 # mni_reg* are saved as world coordinates * 100
 # stored as int16
@@ -107,6 +111,7 @@ t_brain_dist_map = lambda x: x / 10.0
 # stored as int16
 t_mni152_reg = lambda x: x / 100.0
 
+
 class ImageSettings:
     def __init__(self):
         self.labeling_scheme = LabelingScheme(
@@ -119,7 +124,7 @@ class ImageSettings:
         self.generation_labels = GenerationLabels(
             n_labels=256,
             label_range=(0, 100),  # the actual labels; the rest are some mix of these
-            kmeans=(12, 13, 14, 15, 16, 17, 18, 19), # (12, 13, 14, 15), #
+            kmeans=(12, 13, 14, 15, 16, 17, 18, 19),  # (12, 13, 14, 15), #
             lesion=1,
             white=2,
             gray=3,
@@ -128,10 +133,13 @@ class ImageSettings:
         )
 
         self.images = Images(
-            brain_dist_map=ImageData("brain_dist_map.nii", torch.float, t_brain_dist_map),
+            brain_dist_map=ImageData(
+                "brain_dist_map.nii", torch.float, t_brain_dist_map
+            ),
             brainseg=ImageData("brainseg.nii", torch.int32),
             brainseg_with_extracerebral=ImageData(
-                "brainseg_with_extracerebral.nii", torch.int32,
+                "brainseg_with_extracerebral.nii",
+                torch.int32,
             ),
             ct=ImageData("CT.nii", torch.float, defacingmask="ct_mask"),
             ct_mask=ImageData("CT.defacingmask.nii", torch.bool),
@@ -155,7 +163,9 @@ class ImageSettings:
             t1w=ImageData("T1w.nii", torch.float, defacingmask="t1w_mask"),
             t1w_mask=ImageData("T1w.defacingmask.nii", torch.bool),
             # t1w affinely registered to MNI152
-            t1w_areg_mni=ImageData("T1w.areg-mni.nii", torch.float, defacingmask="t1w_areg_mni_mask"),
+            t1w_areg_mni=ImageData(
+                "T1w.areg-mni.nii", torch.float, defacingmask="t1w_areg_mni_mask"
+            ),
             t1w_areg_mni_mask=ImageData("T1w.areg-mni.defacingmask.nii", torch.bool),
             t2w=ImageData("T2w.nii", torch.float, defacingmask="t2w_mask"),
             t2w_mask=ImageData("T2w.defacingmask.nii", torch.bool),
@@ -186,24 +196,52 @@ class ImageSettings:
 # SURFACES
 # ---------------------------
 
+
 class SurfaceSettings:
     def __init__(self):
         self.hemispheres: tuple[str, str] = ("lh", "rh")
-        self.types: tuple = ("white", "pial")
+        self.types: tuple = ("white", "pial", "sphere.reg", "template")
         self.resolutions: tuple = (0, 1, 2, 3, 4, 5, 6)
-        #self.files = SurfaceFiles(self.hemispheres, self.types, self.resolutions)
+        # self.files = SurfaceFiles(self.hemispheres, self.types, self.resolutions)
 
     @staticmethod
-    def get_files(hemispheres, types, resolution, name, extension="pt"):
+    def get_files(
+        hemispheres: list[str] | tuple | str,
+        types: list[str] | tuple | str,
+        name: str | None = None,
+        resolution: int | str | None = None,
+        extension="pt",
+    ):
+        """_summary_
 
+        hemi.type[.name][.resolution].extension
+
+        Parameters
+        ----------
+        hemispheres : _type_
+            _description_
+        types : _type_
+            _description_
+        name : _type_
+            _description_
+        resolution : _type_
+            _description_
+        extension : str, optional
+            _description_, by default "pt"
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
         hemispheres = [hemispheres] if isinstance(hemispheres, str) else hemispheres
 
         if isinstance(types, str):
             types = [types]
 
         remain = [extension]
-        remain = remain if name is None else [name] + remain
         remain = remain if resolution is None else [str(resolution)] + remain
+        remain = remain if name is None else [name] + remain
 
         out = {}
         for h in hemispheres:
@@ -211,7 +249,7 @@ class SurfaceSettings:
                 out[h] = ".".join((h, *remain))
             else:
                 for t in types:
-                    out[(h,t)] = ".".join((h, t, *remain))
+                    out[(h, t)] = ".".join((h, t, *remain))
         return out
 
 

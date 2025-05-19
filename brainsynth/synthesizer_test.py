@@ -20,7 +20,7 @@ if __name__ == "__main__":
     synthconf = SynthesizerConfig(
         "XSubSynthBuilder",
         device="cuda:0",
-        alternative_images=("t1w", "t2w"),
+        selectable_images=("t1w", "t2w"),
         out_center_str="brain",
         segmentation_labels="brainseg",
     )

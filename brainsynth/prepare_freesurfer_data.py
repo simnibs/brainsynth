@@ -18,7 +18,7 @@ from scipy.spatial import cKDTree
 from sklearn.cluster import KMeans
 import torch
 
-import surfa
+#import surfa
 
 from brainsynth import root_dir
 from brainsynth.constants.lut.freesurfer import FreeSurferLUT as lut

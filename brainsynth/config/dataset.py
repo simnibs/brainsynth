@@ -2,6 +2,7 @@ from pathlib import Path
 
 from brainsynth.constants import IMAGE
 
+
 def subjects_subset_str(p: Path, ds: str, subset: None | str = None):
     if subset is None:
         dd = p / f"{ds}.txt"
@@ -17,6 +18,7 @@ def subjects_subset_str(p: Path, ds: str, subset: None | str = None):
 # )
 # ds_config.get_dataset_kwargs()
 
+
 class XDatasetConfig:
     def __init__(
         self,
@@ -26,7 +28,6 @@ class XDatasetConfig:
         datasets: None | list | tuple = None,
         ds_structure="flat",
     ) -> None:
-
         known_datasets = (
             "ABIDE",
             "ADHD200",
@@ -88,20 +89,20 @@ class DatasetConfig:
         )
 
         valid_images = {
-            "ABIDE":        IMAGE.default_images,
-            "ADHD200":      IMAGE.default_images,
-            "ADNI3":        IMAGE.default_images + ["flair"],
-            "AIBL":         IMAGE.default_images + ["flair"],
-            "Buckner40":    IMAGE.default_images,
-            "Chinese-HCP":  IMAGE.default_images,
-            "COBRE":        IMAGE.default_images,
-            "HCP":          IMAGE.default_images + ["t2w"],
-            "ISBI2015":     IMAGE.default_images,
-            "MCIC":         IMAGE.default_images,
-            "OASIS3":       IMAGE.default_images + ["ct", "t2w"],
+            "ABIDE": IMAGE.default_images,
+            "ADHD200": IMAGE.default_images,
+            "ADNI3": IMAGE.default_images + ["flair"],
+            "AIBL": IMAGE.default_images + ["flair"],
+            "Buckner40": IMAGE.default_images,
+            "Chinese-HCP": IMAGE.default_images,
+            "COBRE": IMAGE.default_images,
+            "HCP": IMAGE.default_images + ["t2w"],
+            "ISBI2015": IMAGE.default_images,
+            "MCIC": IMAGE.default_images,
+            "OASIS3": IMAGE.default_images + ["ct", "t2w"],
         }
         datasets = datasets or known_datasets
-        images = ("generation_labels", ) if images is None else images
+        images = ("generation_labels",) if images is None else images
         use_images = {}
         for ds in datasets:
             use_images[ds] = []
@@ -120,14 +121,19 @@ class DatasetConfig:
             ds_is_known
         ), f"Unknown dataset(s) {[ds for ds, i in zip(datasets, ds_is_known) if not i]} (from {known_datasets})"
 
-        self.dataset_kwargs = {
-            ds: dict(
-                root_dir=root_dir,
-                name=ds,
-                subjects=subjects_subset_str(subject_dir, ds, subject_subset),
-                exclude_subjects=subjects_subset_str(subject_dir, ds, exclude_subjects) if exclude_subjects is not None else None,
-                images=use_images[ds],
-                **kwargs,
-            )
-            for ds in datasets
-        }
+        self.dataset_kwargs = {}
+        for ds in datasets:
+            sub_str = subjects_subset_str(subject_dir, ds, subject_subset)
+            if sub_str is not None:
+                self.dataset_kwargs[ds] = dict(
+                    root_dir=root_dir,
+                    name=ds,
+                    subjects=sub_str,
+                    exclude_subjects=subjects_subset_str(
+                        subject_dir, ds, exclude_subjects
+                    )
+                    if exclude_subjects is not None
+                    else None,
+                    images=use_images[ds],
+                    **kwargs,
+                )

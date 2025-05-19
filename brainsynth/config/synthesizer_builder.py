@@ -1,9 +1,9 @@
 from functools import partial
 import torch
 
+import brainsynth
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
-from brainsynth import resources_dir
 from brainsynth.constants import IMAGE
 
 
@@ -566,18 +566,22 @@ class OnlySynthIsoT1w(OnlySynthIso):
             SelectImage("generation_labels"),
             SynthesizeFromMultivariateNormal(
                 mean_loc=torch.load(
-                    resources_dir / "contrast_distributions" / f"{prefix}_mean_loc.pt"
+                    brainsynth.resources.resources_dir
+                    / "contrast_distributions"
+                    / f"{prefix}_mean_loc.pt"
                 ),
                 mean_scale_tril=torch.load(
-                    resources_dir
+                    brainsynth.resources.resources_dir
                     / "contrast_distributions"
                     / f"{prefix}_mean_scale_tril.pt"
                 ),
                 sigma_loc=torch.load(
-                    resources_dir / "contrast_distributions" / f"{prefix}_sigma_loc.pt"
+                    brainsynth.resources.resources_dir
+                    / "contrast_distributions"
+                    / f"{prefix}_sigma_loc.pt"
                 ),
                 sigma_scale_tril=torch.load(
-                    resources_dir
+                    brainsynth.resources.resources_dir
                     / "contrast_distributions"
                     / f"{prefix}_sigma_scale_tril.pt"
                 ),
@@ -666,21 +670,20 @@ class CropSynth(SynthBuilder):
         self.intensity_normalization = IntensityNormalization()
 
     def build_resolution_transform(self):
-        self.resolution_augmentation = IdentityTransform()
-        # PipelineModule(
-        #     RandResolution,
-        #     self.config.out_size,
-        #     self.config.in_res,
-        #     res_sampler = "RandClinicalSlice",
-        #     # res_sampler_kwargs = dict(slice_idx=2),
-        #     photo_mode=self.config.photo_mode,
-        #     photo_res_sampler_kwargs = dict(
-        #         spacing=SelectState("photo_spacing"),
-        #         slice_thickness=self.config.photo_thickness,
-        #     ),
-        #     prob=1.0,
-        #     device=self.device,
-        # )
+        self.resolution_augmentation = PipelineModule(
+            RandResolution,
+            self.config.out_size,
+            self.config.in_res,
+            # res_sampler="RandClinicalSlice",
+            # res_sampler_kwargs = dict(slice_idx=2),
+            photo_mode=self.config.photo_mode,
+            photo_res_sampler_kwargs=dict(
+                spacing=SelectState("photo_spacing"),
+                slice_thickness=self.config.photo_thickness,
+            ),
+            prob=1.0,
+            device=self.device,
+        )
 
     def build_spatial_transform(self):
         self.image_crop = SubPipeline(
@@ -753,7 +756,7 @@ class CropSynth(SynthBuilder):
             #     prob=0.5,
             #     device=self.device,
             # ),
-            # self.resolution_augmentation,
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
 
@@ -800,19 +803,19 @@ class CropSelect(CropSynth):
                     SelectState("selectable_images"),
                 ),
             ),
-            RandGammaTransform(prob=0.33),
+            # RandGammaTransform(prob=0.33),
             self.skullstrip,
             self.image_crop,  # Transform to output FOV
-            RandBiasfield(
-                self.config.out_size,
-                scale_min=0.01,
-                scale_max=0.03,
-                std_min=0.0,
-                std_max=0.3,
-                photo_mode=self.config.photo_mode,
-                prob=0.75,
-                device=self.device,
-            ),
+            # RandBiasfield(
+            #     self.config.out_size,
+            #     scale_min=0.01,
+            #     scale_max=0.03,
+            #     std_min=0.0,
+            #     std_max=0.3,
+            #     photo_mode=self.config.photo_mode,
+            #     prob=0.75,
+            #     device=self.device,
+            # ),
             # Small, local intensity variations
             # RandBiasfield(
             #     self.config.out_size,
@@ -824,9 +827,19 @@ class CropSelect(CropSynth):
             #     prob=0.5,
             #     device=self.device,
             # ),
-            # self.resolution_augmentation,
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
+
+
+class CropSynthIso(CropSynth):
+    def build_resolution_transform(self):
+        self.resolution_augmentation = IdentityTransform()
+
+
+class CropSelectIso(CropSelect):
+    def build_resolution_transform(self):
+        self.resolution_augmentation = IdentityTransform()
 
 
 class SynthOrSelectImage(DefaultSynth):

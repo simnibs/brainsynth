@@ -6,8 +6,9 @@ from .base import BaseTransform
 
 
 class RandClinicalSlice(BaseTransform):
-    def __init__(self, low: float = 2.5, high: float = 8.5, device: None | torch.device = None):
+    def __init__(self, low: float = 2.5, high: float = 8.5, slice_idx: int | None  = None, device: None | torch.device = None):
         super().__init__(device)
+        self.slice_idx = slice_idx
         with torch.device(self.device):
             self.uniform = torch.distributions.Uniform(low, high)
 
@@ -17,9 +18,7 @@ class RandClinicalSlice(BaseTransform):
             resolution = torch.tensor([1.0, 1.0, 1.0])
             thickness = torch.tensor([1.0, 1.0, 1.0])
 
-            idx = torch.randint(0, 3, (1,))
-
-            # idx = 2
+            idx = torch.randint(0, 3, (1,)) if self.slice_idx is None else self.slice_idx
 
             resolution[idx] = self.uniform.sample()
             thickness[idx] = torch.minimum(

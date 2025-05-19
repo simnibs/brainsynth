@@ -1,8 +1,6 @@
-from pathlib import Path
-
-root_dir = Path(__file__).parent
-resources_dir = root_dir / "resources"
+__all__ = ["config", "dataset", "resources", "Synthesizer"]
 
 from brainsynth import config
 from brainsynth import dataset
+from brainsynth import resources
 from brainsynth.synthesizer import Synthesizer

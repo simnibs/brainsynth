@@ -9,7 +9,6 @@ from brainsynth.transforms.filters import GaussianSmooth
 
 from brainsynth.transforms.utilities import channel_last, method_recursion_dict
 
-
 class SpatialCropParameters(BaseTransform):
     def __init__(
         self,
@@ -1123,10 +1122,10 @@ class RandResolution(RandomizableTransform):
         out_size: torch.Tensor | tuple,
         in_res: torch.Tensor | tuple,
         res_sampler: str = "ResolutionSamplerDefault",
+        res_sampler_kwargs: dict = {},
         photo_mode: bool = False,
-        photo_spacing: float | None = None,
-        photo_thickness: float = 0.001,
         photo_res_sampler: str = "ResolutionSamplerPhoto",
+        photo_res_sampler_kwargs: dict | None = {},
         prob: float = 1.0,
         device: None | torch.device = None,
     ):
@@ -1135,22 +1134,22 @@ class RandResolution(RandomizableTransform):
         self.in_res = torch.as_tensor(in_res, device=self.device)
         self.out_size = torch.as_tensor(out_size, device=self.device)
         self.photo_mode = photo_mode
-        self.photo_spacing = photo_spacing
         self.resize = Resize(out_size)
 
         # Apply resolution and slice thickness blurring if different from the
         # target resolution
         if self.should_apply_transform():
             if self.photo_mode:
+                if photo_res_sampler_kwargs is None:
+                    photo_res_sampler_kwargs = dict(spacing=None, slice_thickness=0.001)
                 out_res, thickness = getattr(resolution_sampler, photo_res_sampler)(
                     self.in_res,
-                    photo_spacing,
-                    photo_thickness,
-                    self.device,
+                    **photo_res_sampler_kwargs,
+                    device=self.device,
                 )
             else:
                 out_res, thickness = getattr(resolution_sampler, res_sampler)(
-                    self.device
+                    **res_sampler_kwargs, device=self.device,
                 )()
 
             sigma = (

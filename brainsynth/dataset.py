@@ -12,6 +12,7 @@ from brainsynth.config import DatasetConfig, SynthesizerConfig, XDatasetConfig
 from brainsynth.synthesizer import Synthesizer
 from brainsynth.utilities import apply_affine
 
+
 def atleast_4d(tensor):
     return atleast_4d(tensor[None]) if tensor.ndim < 4 else tensor
 
@@ -21,7 +22,10 @@ def load_dataset_subjects(filename):
 
 
 def _load_image(
-    image: nib.Nifti1Image | Path | str, dtype, transform: Callable | None = None, return_affine: bool = False
+    image: nib.Nifti1Image | Path | str,
+    dtype,
+    transform: Callable | None = None,
+    return_affine: bool = False,
 ):
     # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
     if isinstance(image, nib.Nifti1Image):
@@ -44,7 +48,9 @@ def _load_image(
         raise ValueError(
             f"Image {filename} has more than four dimensions (shape is {data.shape})"
         )
-    return (data, torch.tensor(img.affine, dtype=torch.float)) if return_affine else data
+    return (
+        (data, torch.tensor(img.affine, dtype=torch.float)) if return_affine else data
+    )
 
 
 class SynthesizedDataset(torch.utils.data.Dataset):
@@ -52,7 +58,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         self,
         root_dir: str | Path,
         name: str,
-        subjects: None | str | list | tuple = None,
+        subjects: str | list | tuple,
         synthesizer: None | Synthesizer | SynthesizerConfig = None,
         images: None | list | tuple = None,
         load_mask: bool | str = False,
@@ -60,6 +66,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_vertices: dict | None = {},
         target_faces: dict | None = {},
         template_surface: dict | None = {},
+        return_affine: bool = False,
         randomize_hemisphere: bool = False,
         exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
@@ -113,11 +120,16 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         """
         self.load_mask = load_mask
 
-        self._initialize_io_settings(root_dir, name, ds_structure, subjects, exclude_subjects)
+        self._initialize_io_settings(
+            root_dir, name, ds_structure, subjects, exclude_subjects
+        )
         self._initialize_image_settings(images)
+        self.return_affine = return_affine
 
         self.randomize_hemisphere = randomize_hemisphere
-        self._initialize_surface_settings(target_vertices, target_faces, template_surface)
+        self._initialize_surface_settings(
+            target_vertices, target_faces, template_surface
+        )
 
         match synthesizer:
             case Synthesizer():
@@ -142,12 +154,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             case _:
                 raise ValueError("Wrong type for `xdataset`")
 
-    def _initialize_io_settings(self, ds_dir, name, ds_structure, subjects, exclude_subjects):
+    def _initialize_io_settings(
+        self, ds_dir, name, ds_structure, subjects, exclude_subjects
+    ):
         self.ds_dir = Path(ds_dir)
         self.name = name
         self.ds_structure = ds_structure
 
-        # Subjects
         subjects = (
             load_dataset_subjects(subjects)
             if isinstance(subjects, (Path, str))
@@ -160,21 +173,25 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         )
 
         self.subjects = subjects if exclude is None else np.setdiff1d(subjects, exclude)
-        self.n_subjects = len(self.subjects)
 
         # Filename generators
         match self.ds_structure:
             case "flat":
+
                 def get_image_filename(subject, image):
                     return self.ds_dir / f"{self.name}.{subject}.{image}"
+
                 def get_surface_filename(subject, surface):
                     # return self.ds_dir / f"{self.name}.{subject}.{surface}"
                     return self.ds_dir / f"{self.name}.{subject}.surf_dir" / surface
             case "tree":
+
                 def get_image_filename(subject, image):
                     return self.ds_dir / self.name / subject / image
+
                 def get_surface_filename(subject, surface):
                     return self.ds_dir / self.name / subject / surface
+
         self.get_image_filename = get_image_filename
         self.get_surface_filename = get_surface_filename
 
@@ -192,9 +209,9 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         else:
             kwargs = dict(
                 hemispheres=SURFACE.hemispheres,
-                types=SURFACE.types,
-                resolution=7,
-                name="target",
+                types=("white", "pial"),
+                resolution=6,
+                name="resampled",
             )
             if isinstance(target_vertices_kwargs, dict):
                 if "hemispheres" in target_vertices_kwargs:
@@ -242,9 +259,8 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         else:
             kwargs = dict(
                 hemispheres=SURFACE.hemispheres,
-                types=None,
+                types="template",
                 resolution=0,
-                name="template",
             )
             if isinstance(template_surface_kwargs, dict):
                 if "hemispheres" in template_surface_kwargs:
@@ -271,20 +287,26 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
     @staticmethod
     def extract_vertices(surfaces):
-        return {h: {s: v[0] for s,v in hemisphere.items()} for h,hemisphere in surfaces.items() }
+        return {
+            h: {s: v[0] for s, v in hemisphere.items()}
+            for h, hemisphere in surfaces.items()
+        }
 
     @staticmethod
     def extract_faces(surfaces):
-        return {h: {s: v[1] for s,v in hemisphere.items()} for h,hemisphere in surfaces.items() }
+        return {
+            h: {s: v[1] for s, v in hemisphere.items()}
+            for h, hemisphere in surfaces.items()
+        }
 
     @staticmethod
     def update_vertices_from_other(s_self, s_other):
-        for h,hemi in s_self.items():
-            for s,v in hemi.items():
+        for h, hemi in s_self.items():
+            for s, v in hemi.items():
                 s_self[h][s] = (s_other[h][s][0], v[1])
 
     def load_data(self, subject):
-        images = self.load_images(subject)
+        images, affines = self.load_images(subject)
         surfaces, initial_vertices = self.load_surfaces(subject)
 
         if self.xdataset is not None:
@@ -295,18 +317,24 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             images |= {f"other:{k}": v for k, v in ximages.items()}
 
         if self.synthesizer is None:
-            return images, surfaces, initial_vertices
+            return images, affines, surfaces, initial_vertices
         else:
             with torch.no_grad():
-                return self.synthesizer(images, surfaces, initial_vertices)
+                return self.synthesizer(images, surfaces, initial_vertices, affines)
 
     def load_images(self, subject):
         images = {}
+        affines = {}
         for image in self.images:
             # Not all subjects have all images
             img = getattr(IMAGE.images, image)
             if (fi := self.get_image_filename(subject, img.filename)).exists():
-                images[image] = _load_image(fi, img.dtype, img.transform)
+                if self.return_affine:
+                    images[image], affines[image] = _load_image(
+                        fi, img.dtype, img.transform, return_affine=True
+                    )
+                else:
+                    images[image] = _load_image(fi, img.dtype, img.transform)
                 # If the image has an associated defacing mask, load it
                 if self.load_mask is not False and img.defacingmask is not None:
                     mask = getattr(IMAGE.images, img.defacingmask)
@@ -319,7 +347,8 @@ class SynthesizedDataset(torch.utils.data.Dataset):
                         images[img.defacingmask] = torch.ones(
                             images[image].shape, dtype=mask.dtype
                         )
-        return images
+
+        return images, affines
 
     def load_surfaces(self, subject):
         if self.randomize_hemisphere:
@@ -357,7 +386,9 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         return {
             h: {
                 t: torch.load(
-                    self.get_surface_filename(subject, self.target_vertices_files[h, t]),
+                    self.get_surface_filename(
+                        subject, self.target_vertices_files[h, t]
+                    ),
                     weights_only=True,
                 )
                 for t in self.target_surface_kwargs["types"]
@@ -365,12 +396,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             for h in hemi
         }
 
-
     def _load_template_surfaces(self, subject, hemi):
         if (t := self.template_surface_kwargs["types"]) is not None:
             return {
                 h: torch.load(
-                    self.get_surface_filename(subject, self.template_surface_files[h, t]),
+                    self.get_surface_filename(
+                        subject, self.template_surface_files[h, t]
+                    ),
                     weights_only=True,
                 )
                 for h in hemi
@@ -418,16 +450,18 @@ class XDataset(torch.utils.data.Dataset):
             if isinstance(subjects, (Path, str))
             else subjects
         )
-        self.n_subjects = len(self.subjects)
 
         # Filename generators
         match self.ds_structure:
             case "flat":
+
                 def get_image_filename(subject, image):
                     return self.ds_dir / f"{self.name}.{subject}.{image}"
             case "tree":
+
                 def get_image_filename(subject, image):
                     return self.ds_dir / self.name / subject / image
+
         self.get_image_filename = get_image_filename
 
     def _initialize_image_settings(self, images):
@@ -504,17 +538,17 @@ class PredictionDataset(torch.utils.data.Dataset):
 
         # TOPOFIT
         v, _, m = nib.freesurfer.read_geometry(
-            brainsynth.resources_dir / "cortex-int-lh.srf", read_metadata=True
+            brainsynth.resources.resources_dir / "cortex-int-lh.srf", read_metadata=True
         )
         flip_x = np.array([-1, 1, 1])
         for h in self.hemi:
             if h == "lh":
                 self.template[h] = torch.tensor(v[:nv_template].astype(np.float32))
             elif h == "rh":
-                self.template[h] = torch.tensor((v[:nv_template]*flip_x).astype(np.float32))
+                self.template[h] = torch.tensor(
+                    (v[:nv_template] * flip_x).astype(np.float32)
+                )
             self.template_meta[h] = m
-
-
 
         # (8) from https://surfer.nmr.mgh.harvard.edu/fswiki/CoordinateSystems
         mni305_to_mni152 = torch.tensor(
@@ -528,9 +562,11 @@ class PredictionDataset(torch.utils.data.Dataset):
 
         match mni_direction:
             case "sub2mni":
+
                 def mni_to_sub(t):
                     return torch.linalg.inv(t)
             case "mni2sub":
+
                 def mni_to_sub(t):
                     return t
 
@@ -541,6 +577,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 def preprocess_mni_transform(t):
                     return mni_to_sub(t) @ mni305_to_mni152
             case "mni305":
+
                 def preprocess_mni_transform(t):
                     return mni_to_sub(t)
 
@@ -577,10 +614,30 @@ class PredictionDataset(torch.utils.data.Dataset):
         return image, template, vox2mri
 
 
+class AlignmentDataset(SynthesizedDataset):
+    def __init__(self, *args, **kwargs):
+        """ """
+        super().__init__(*args, **kwargs)
+        self.trans_name = "mni305-to-ras.{}.pt"
+        self.which = ("lh", "rh", "brain")
+
+    def load_transformation(self, subject):
+        subject_dir = self.ds_dir / self.name / subject
+        return {
+            k: torch.load(subject_dir / self.trans_name.format(k)) for k in self.which
+        }
+
+    def __getitem__(self, index):
+        subject = self.subjects[index]
+        image, vox2mri = self.load_images(subject, return_affine=True)
+        affines = self.load_transformation(subject)
+        return image, vox2mri, affines
+
+
 def make_dataloader(
     dataset: torch.utils.data.Dataset,
     batch_size: int = 1,
-    num_workers: int = 2,
+    num_workers: int = 4,
     prefetch_factor: int = 2,
     shuffle: bool = True,
     drop_last: bool = False,
@@ -613,9 +670,9 @@ def concatenate_datasets(
 
 def setup_dataloader(
     dataset_config: DatasetConfig,
-    dataloader_kwargs: dict | None = None,
     separate_datasets: bool = False,
     dataset_class: SynthesizedDataset = SynthesizedDataset,
+    **kwargs,
 ):
     """Construct a dataloader by first constructing datasets from `dataset_kwargs`
     and concatenating them.
@@ -628,12 +685,10 @@ def setup_dataloader(
     dataloader_kwargs:
         Kwargs passed to dataloader constructor.
     """
-    dataloader_kwargs = dataloader_kwargs or {}
-
     # Individual datasets
     if separate_datasets:
         dl = {
-            k: make_dataloader(dataset_class(**kw), **dataloader_kwargs)
+            k: make_dataloader(dataset_class(**kw), **kwargs)
             for k, kw in dataset_config.dataset_kwargs.items()
         }
         # original datasets are in
@@ -641,7 +696,7 @@ def setup_dataloader(
         #                        subset  concat  list of original ds
     else:
         dl = make_dataloader(
-            concatenate_datasets(dataset_config, dataset_class), **dataloader_kwargs
+            concatenate_datasets(dataset_config, dataset_class), **kwargs
         )
     return dl
 
