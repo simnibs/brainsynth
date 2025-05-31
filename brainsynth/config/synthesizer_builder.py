@@ -8,21 +8,21 @@ from brainsynth.constants import IMAGE
 
 
 class SynthBuilder:
-    def __init__(self, config) -> None:
+    def __init__(self, config: SynthesizerConfig) -> None:
         self.config = config
         self.device = config.device
 
-    def initialize_spatial_transform(self):
+    def initialize_spatial_transforms(self):
         """Optional."""
         pass
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self, *args, **kwargs):
         raise NotImplementedError
 
-    def build_intensity_transform(self):
+    def build_intensity_transforms(self, *args, **kwargs):
         raise NotImplementedError
 
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self, *args, **kwargs):
         raise NotImplementedError
 
     def build_state(self):
@@ -51,13 +51,13 @@ class SynthBuilder:
             etc.
         """
 
-        self.initialize_spatial_transform()
+        self.initialize_spatial_transforms()
         state = self.build_state()
 
         # The following relies (may rely) on the state
-        self.build_spatial_transform()
-        self.build_intensity_transform()
-        self.build_resolution_transform()
+        self.build_spatial_transforms(**self.config.spatial_transforms_kw)
+        self.build_intensity_transforms(**self.config.intensity_transforms_kw)
+        self.build_resolution_transforms(**self.config.resolution_transforms_kw)
 
         output = self.build_output()
 
@@ -97,7 +97,7 @@ class PredictionBuilder(SynthBuilder):
             ),
         )
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self):
         self.image_crop = SubPipeline(
             PipelineModule(
                 SpatialCrop,
@@ -128,8 +128,11 @@ class PredictionBuilder(SynthBuilder):
             ),
         )
 
-    def build_intensity_transform(self):
+    def build_intensity_transforms(self):
         self.intensity_normalization = IntensityNormalization()
+
+    def build_resolution_transforms(self):
+        self.resolution_augmentation = IdentityTransform()
 
     def build_output(self):
         return dict(
@@ -137,11 +140,6 @@ class PredictionBuilder(SynthBuilder):
                 SelectImage("image"),
                 self.image_crop,
                 self.intensity_normalization,
-            ),
-            surface=Pipeline(
-                SelectSurface(),
-                self.surface_translation,
-                skip_on_InputSelectorError=True,
             ),
             initial_vertices=Pipeline(
                 SelectInitialVertices(),
@@ -163,7 +161,7 @@ class DefaultSynth(SynthBuilder):
         """
         super().__init__(config)
 
-    def initialize_spatial_transform(self):
+    def initialize_spatial_transforms(self):
         self.nonlinear_transform = RandNonlinearTransform(
             self.config.out_size,
             scale_min=0.03,  # 0.10,
@@ -214,7 +212,7 @@ class DefaultSynth(SynthBuilder):
                 unpack_inputs=False,
             ),
             extracerebral_mask=Pipeline(
-                SelectImage("generation_labels_dist"),
+                SelectImage(self.config.generation_image),
                 PipelineModule(
                     MaskFromLabelImage,
                     labels=[0] + list(IMAGE.generation_labels.kmeans),
@@ -252,7 +250,7 @@ class DefaultSynth(SynthBuilder):
             ),
         )
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self):
         self.image_deformation = SubPipeline(
             PipelineModule(
                 GridSample,
@@ -274,33 +272,44 @@ class DefaultSynth(SynthBuilder):
             CheckCoordsInside(self.config.out_size, device=self.device),
         )
 
-    def build_intensity_transform(self):
-        self.skullstrip = PipelineModule(
-            SwitchTransform,
-            IdentityTransform(),
-            # skull strip
-            PipelineModule(
-                RandMaskRemove,
-                SelectState("extracerebral_mask"),
-            ),
-            # salt and pepper noise (e.g., like MP2RAGE)
-            PipelineModule(
-                RandSaltAndPepperNoise,
-                SelectState("extracerebral_mask"),
-                scale=255.0,
-                device=self.device,
-            ),
-            prob=(0.8, 0.1, 0.1),
-        )
+    def build_intensity_transforms(self, extracerebral_augmentation: bool = True):
+        if extracerebral_augmentation:
+            self.extracerebral_augmentation = PipelineModule(
+                SwitchTransform,
+                IdentityTransform(),
+                # skull strip
+                PipelineModule(
+                    RandMaskRemove,
+                    SelectState("extracerebral_mask"),
+                ),
+                # salt and pepper noise (e.g., like MP2RAGE)
+                PipelineModule(
+                    RandSaltAndPepperNoise,
+                    SelectState("extracerebral_mask"),
+                    scale=255.0,
+                    device=self.device,
+                ),
+                prob=(0.8, 0.1, 0.1),
+            )
+        else:
+            self.extracerebral_augmentation = IdentityTransform()
         self.intensity_normalization = IntensityNormalization()
 
-    def build_resolution_transform(self):
+    def build_resolution_transforms(
+        self,
+        resolution_sampler: str = "ResolutionSamplerDefault",
+        resolution_sampler_kw: dict | None = None,
+    ):
+        resolution_sampler_kw = resolution_sampler_kw or None
+
         self.resolution_augmentation = PipelineModule(
             RandResolution,
             self.config.out_size,
             self.config.in_res,
-            res_sampler="RandClinicalSlice",
-            # res_sampler_kwargs = dict(slice_idx=2),
+            resolution_sampler,
+            resolution_sampler_kw,
+            # res_sampler="RandClinicalSlice",
+            # res_sampler_kwargs=dict(slice_idx=2),
             photo_mode=self.config.photo_mode,
             photo_res_sampler_kwargs=dict(
                 spacing=SelectState("photo_spacing"),
@@ -313,7 +322,7 @@ class DefaultSynth(SynthBuilder):
     def build_image(self):
         return Pipeline(
             # Synthesize image
-            SelectImage("generation_labels_dist"),
+            SelectImage(self.config.generation_image),
             SynthesizeIntensityImage(
                 mu_low=25.0,
                 mu_high=200.0,
@@ -327,7 +336,7 @@ class DefaultSynth(SynthBuilder):
                 device=self.device,
             ),
             RandGammaTransform(prob=0.33),
-            self.skullstrip,
+            self.extracerebral_augmentation,
             self.image_deformation,  # Transform to output FOV
             RandBiasfield(
                 self.config.out_size,
@@ -388,7 +397,7 @@ class DefaultSynth(SynthBuilder):
         return dict(
             t1w=Pipeline(
                 SelectImage("t1w"),
-                self.skullstrip,
+                self.extracerebral_augmentation,
                 self.image_deformation,
                 self.intensity_normalization,
                 # This pipeline is allowed to fail if the input is not found
@@ -396,7 +405,7 @@ class DefaultSynth(SynthBuilder):
             ),
             t1w_mask=Pipeline(
                 SelectImage("t1w_mask"),
-                self.skullstrip,
+                self.extracerebral_augmentation,
                 self.image_deformation,
                 skip_on_InputSelectorError=True,
             ),
@@ -447,7 +456,7 @@ class OnlySynth(DefaultSynth):
         """
         super().__init__(config)
 
-    def initialize_spatial_transform(self):
+    def initialize_spatial_transforms(self):
         """No spatial transformation."""
         self.linear_transform = IdentityTransform()
         self.nonlinear_transform = IdentityTransform()
@@ -456,20 +465,18 @@ class OnlySynth(DefaultSynth):
 
 
 class OnlySynthIso(OnlySynth):
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         self.resolution_augmentation = IdentityTransform()
 
 
 class OnlySelect(OnlySynth):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        """This pipeline includes
+    """This pipeline includes
 
-            - selection of an image as the input image for training
-            - resolution augmentation from DefaultSynth
+        - selection of an image as the input image for training
+        - resolution augmentation from DefaultSynth
 
-        and thus *no* spatial augmentation (only extracting a particular FOV).
-        """
-        super().__init__(config)
+    and thus *no* spatial augmentation (only extracting a particular FOV).
+    """
 
     def build_state(self):
         state = super().build_state()
@@ -494,7 +501,7 @@ class OnlySelect(OnlySynth):
                     SelectState("selectable_images"),
                 ),
             ),
-            self.skullstrip,
+            self.extracerebral_augmentation,
             self.image_deformation,  # Transform to output FOV
             # self.resolution_augmentation,
             self.intensity_normalization,
@@ -510,7 +517,14 @@ class OnlySelect(OnlySynth):
             ),
             t1w=Pipeline(
                 SelectImage("t1w"),
-                self.skullstrip,
+                self.extracerebral_augmentation,
+                self.image_deformation,
+                self.intensity_normalization,
+                skip_on_InputSelectorError=True,
+            ),
+            t2w=Pipeline(
+                SelectImage("t1w"),
+                self.extracerebral_augmentation,
                 self.image_deformation,
                 self.intensity_normalization,
                 skip_on_InputSelectorError=True,
@@ -529,35 +543,13 @@ class OnlySelect(OnlySynth):
         )
 
 
-class OnlySelectNoSkullStrip(OnlySelect):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        """This pipeline includes
-
-            - selection of an image as the input image for training
-            - resolution augmentation from DefaultSynth
-
-        and thus *no* spatial augmentation (only extracting a particular FOV).
-        """
-        super().__init__(config)
-
-    def build_intensity_transform(self):
-        # remove skull-stripping
-        self.skullstrip = IdentityTransform()
-        self.intensity_normalization = IntensityNormalization()
-
-
-class OnlySelectNoSkullStripIso(OnlySelectNoSkullStrip):
-    def build_resolution_transform(self):
-        self.resolution_augmentation = IdentityTransform()
-
-
 class OnlySelectIso(OnlySelect):
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         self.resolution_augmentation = IdentityTransform()
 
 
 class OnlySynthIsoT1w(OnlySynthIso):
-    def build_intensity_transform(self):
+    def build_intensity_transforms(self):
         self.intensity_normalization = IntensityNormalization()
 
     def build_image(self):
@@ -623,7 +615,7 @@ class CropSynth(SynthBuilder):
                 SpatialSize(),
             ),
             extracerebral_mask=Pipeline(
-                SelectImage("generation_labels_dist"),
+                SelectImage(self.config.generation_image),
                 PipelineModule(
                     MaskFromLabelImage,
                     labels=[0] + list(IMAGE.generation_labels.kmeans),
@@ -649,27 +641,30 @@ class CropSynth(SynthBuilder):
             ),
         )
 
-    def build_intensity_transform(self):
-        self.skullstrip = PipelineModule(
-            SwitchTransform,
-            IdentityTransform(),
-            # skull strip
-            PipelineModule(
-                RandMaskRemove,
-                SelectState("extracerebral_mask"),
-            ),
-            # salt and pepper noise (e.g., like MP2RAGE)
-            PipelineModule(
-                RandSaltAndPepperNoise,
-                SelectState("extracerebral_mask"),
-                scale=255.0,
-                device=self.device,
-            ),
-            prob=(0.8, 0.1, 0.1),
-        )
+    def build_intensity_transforms(self, extracerebral_augmentation: bool = True):
+        if extracerebral_augmentation:
+            self.extracerebral_augmentation = PipelineModule(
+                SwitchTransform,
+                IdentityTransform(),
+                # skull strip
+                PipelineModule(
+                    RandMaskRemove,
+                    SelectState("extracerebral_mask"),
+                ),
+                # salt and pepper noise (e.g., like MP2RAGE)
+                PipelineModule(
+                    RandSaltAndPepperNoise,
+                    SelectState("extracerebral_mask"),
+                    scale=255.0,
+                    device=self.device,
+                ),
+                prob=(0.8, 0.1, 0.1),
+            )
+        else:
+            self.extracerebral_augmentation = IdentityTransform()
         self.intensity_normalization = IntensityNormalization()
 
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         self.resolution_augmentation = PipelineModule(
             RandResolution,
             self.config.out_size,
@@ -685,7 +680,7 @@ class CropSynth(SynthBuilder):
             device=self.device,
         )
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self):
         self.image_crop = SubPipeline(
             PipelineModule(
                 SpatialCrop,
@@ -719,7 +714,7 @@ class CropSynth(SynthBuilder):
     def build_image(self):
         return Pipeline(
             # Synthesize image
-            SelectImage("generation_labels_dist"),
+            SelectImage(self.config.generation_image),
             SynthesizeIntensityImage(
                 mu_low=25.0,
                 mu_high=200.0,
@@ -733,7 +728,7 @@ class CropSynth(SynthBuilder):
                 device=self.device,
             ),
             RandGammaTransform(prob=0.33),
-            self.skullstrip,
+            self.extracerebral_augmentation,
             self.image_crop,  # Transform to output FOV
             RandBiasfield(
                 self.config.out_size,
@@ -764,7 +759,7 @@ class CropSynth(SynthBuilder):
         return dict(
             t1w=Pipeline(
                 SelectImage("t1w"),
-                self.skullstrip,
+                self.extracerebral_augmentation,
                 self.image_crop,
                 self.intensity_normalization,
                 skip_on_InputSelectorError=True,
@@ -776,7 +771,7 @@ class CropSynth(SynthBuilder):
             image=self.build_image(),
             **self.build_images(),
             affine=Pipeline(
-                SelectAffine("generation_labels_dist"), self.affine_adjuster
+                SelectAffine(self.config.generation_image), self.affine_adjuster
             ),
         )
 
@@ -794,51 +789,42 @@ class CropSelect(CropSynth):
 
     def build_image(self):
         return Pipeline(
-            # Select one of the available (valid) images
+            # Select one of the available (valid) images (equal probability of
+            # selecting each image)
             PipelineModule(
                 SelectImage,
                 PipelineModule(
                     RandomChoice,
-                    # equal probability of selecting each image
                     SelectState("selectable_images"),
                 ),
             ),
-            # RandGammaTransform(prob=0.33),
-            self.skullstrip,
+            self.extracerebral_augmentation,
             self.image_crop,  # Transform to output FOV
-            # RandBiasfield(
-            #     self.config.out_size,
-            #     scale_min=0.01,
-            #     scale_max=0.03,
-            #     std_min=0.0,
-            #     std_max=0.3,
-            #     photo_mode=self.config.photo_mode,
-            #     prob=0.75,
-            #     device=self.device,
-            # ),
-            # Small, local intensity variations
-            # RandBiasfield(
-            #     self.config.out_size,
-            #     scale_min=0.10,
-            #     scale_max=0.20,
-            #     std_min=0.0,
-            #     std_max=0.15,
-            #     photo_mode=self.config.photo_mode,
-            #     prob=0.5,
-            #     device=self.device,
-            # ),
             self.resolution_augmentation,
             self.intensity_normalization,
         )
 
+    def build_output(self):
+        return dict(
+            image=self.build_image(),
+            **self.build_images(),
+            affine=Pipeline(
+                PipelineModule(
+                    SelectAffine,
+                    SelectState("available_images", 0),
+                ),
+                self.affine_adjuster,
+            ),
+        )
+
 
 class CropSynthIso(CropSynth):
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         self.resolution_augmentation = IdentityTransform()
 
 
 class CropSelectIso(CropSelect):
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         self.resolution_augmentation = IdentityTransform()
 
 
@@ -870,7 +856,7 @@ class SynthOrSelectImage(DefaultSynth):
                 [
                     # Synthesize image
                     Pipeline(
-                        SelectImage("generation_labels_dist"),
+                        SelectImage(self.config.generation_image),
                         SynthesizeIntensityImage(
                             mu_low=25.0,
                             mu_high=200.0,
@@ -918,7 +904,7 @@ class XSubSynth(DefaultSynth):
     def __init__(self, config: SynthesizerConfig) -> None:
         super().__init__(config)
 
-    def initialize_spatial_transform(self):
+    def initialize_spatial_transforms(self):
         self.warp_surface = SubPipeline(
             PipelineModule(
                 XSubWarpSurface_v2,  # or XSubWarpSurface_v1
@@ -928,7 +914,7 @@ class XSubSynth(DefaultSynth):
             ),
         )
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self):
         self.image_deformation = SubPipeline(
             PipelineModule(
                 XSubWarpImage,
@@ -1102,7 +1088,7 @@ class XSubSynth(DefaultSynth):
             #     prob=0.9,
             #     device=self.device,
             # ),
-            self.resolution_augmentation(),
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
 
@@ -1177,7 +1163,7 @@ class SaverioSynth(SynthBuilder):
     def __init__(self, config: SynthesizerConfig) -> None:
         super().__init__(config)
 
-    def initialize_spatial_transform(self):
+    def initialize_spatial_transforms(self):
         self.nonlinear_transform = RandNonlinearTransform(
             self.config.out_size,
             scale_min=0.03,  # 0.10,
@@ -1243,7 +1229,7 @@ class SaverioSynth(SynthBuilder):
             ),
         )
 
-    def build_spatial_transform(self):
+    def build_spatial_transforms(self):
         self.image_deformation = SubPipeline(
             PipelineModule(
                 GridSample,
@@ -1252,10 +1238,10 @@ class SaverioSynth(SynthBuilder):
             ),
         )
 
-    def build_intensity_transform(self):
+    def build_intensity_transforms(self):
         self.intensity_normalization = IntensityNormalization()
 
-    def build_resolution_transform(self):
+    def build_resolution_transforms(self):
         # self.resolution_augmentation = PipelineModule(
         #     RandResolution,
         #     self.config.out_size,

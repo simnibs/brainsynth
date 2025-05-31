@@ -1,16 +1,20 @@
-
 import torch
 
 from brainsynth.constants import IMAGE
 from brainsynth.transforms.spatial import GridCentering
 
+
 class PredictionConfig:
-    def __init__(self,
+    def __init__(
+        self,
         builder: str,
         # in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
         out_size: list[int] | tuple[int, int, int] = (192, 192, 192),
         out_center_str: str = "image",
         align_corners: bool = True,
+        intensity_transforms_kw: dict | None = None,
+        resolution_transforms_kw: dict | None = None,
+        spatial_transforms_kw: dict | None = None,
         device: str | torch.device = "cuda",
     ):
         self.device = torch.device(device)
@@ -43,8 +47,13 @@ class PredictionConfig:
         assert out_center_str in {"brain", "image", "lh", "random", "rh"}
         self.out_center_str = out_center_str
 
+        self.intensity_transforms_kw = intensity_transforms_kw or {}
+        self.resolution_transforms_kw = resolution_transforms_kw or {}
+        self.spatial_transforms_kw = spatial_transforms_kw or {}
+
     def __repr__(self):
         return "\n".join([f"{k}: {v}" for k, v in self.__dict__.items()])
+
 
 class SynthesizerConfig(PredictionConfig):
     def __init__(
@@ -58,10 +67,23 @@ class SynthesizerConfig(PredictionConfig):
         photo_mode: bool = False,
         photo_spacing_range: list[float] | tuple[float, float] = (2.0, 7.0),
         photo_thickness: float = 0.001,
+        generation_image: str = "generation_labels_dist",
         selectable_images: None | list[str] | tuple = None,
+        intensity_transforms_kw: dict | None = None,
+        resolution_transforms_kw: dict | None = None,
+        spatial_transforms_kw: dict | None = None,
         device: str | torch.device = "cuda",
     ):
-        super().__init__(builder, out_size, out_center_str, align_corners, device)
+        super().__init__(
+            builder,
+            out_size,
+            out_center_str,
+            align_corners,
+            intensity_transforms_kw,
+            resolution_transforms_kw,
+            spatial_transforms_kw,
+            device,
+        )
 
         assert len(in_res) == 3
         self.in_res = torch.tensor(in_res, device=self.device)
@@ -79,4 +101,8 @@ class SynthesizerConfig(PredictionConfig):
 
         # if alternative_images is not None:
         # alternative_images = tuple(f"{mikeys.image}:{i}" for i in alternative_images)
-        self.selectable_images = selectable_images if selectable_images is not None else []
+        self.selectable_images = (
+            selectable_images if selectable_images is not None else []
+        )
+
+        self.generation_image = generation_image

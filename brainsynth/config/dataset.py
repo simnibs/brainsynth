@@ -77,6 +77,7 @@ class DatasetConfig:
         known_datasets = (
             "ABIDE",
             "ADHD200",
+            "ADNI-GO2",
             "ADNI3",
             "AIBL",
             "Buckner40",
@@ -91,6 +92,7 @@ class DatasetConfig:
         valid_images = {
             "ABIDE": IMAGE.default_images,
             "ADHD200": IMAGE.default_images,
+            "ADNI-GO2": ["t1w", "flair"],
             "ADNI3": IMAGE.default_images + ["flair"],
             "AIBL": IMAGE.default_images + ["flair"],
             "Buckner40": IMAGE.default_images,
@@ -110,7 +112,9 @@ class DatasetConfig:
                 if i in valid_images[ds]:
                     use_images[ds].append(i)
                 else:
-                    raise ValueError(f"Invalid image `{i}` for dataset {ds}.")
+                    raise ValueError(
+                        f"Invalid image `{i}` for dataset {ds}. Valid images are {valid_images[ds]}"
+                    )
         # use_images = {ds: [i for i in images if i in valid_images[ds]] for ds in datasets}
 
         root_dir = Path(root_dir)
