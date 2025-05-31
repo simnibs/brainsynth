@@ -10,11 +10,7 @@ import brainsynth
 from brainsynth.constants import IMAGE, SURFACE
 from brainsynth.config import DatasetConfig, SynthesizerConfig, XDatasetConfig
 from brainsynth.synthesizer import Synthesizer
-from brainsynth.utilities import apply_affine
-
-
-def atleast_4d(tensor):
-    return atleast_4d(tensor[None]) if tensor.ndim < 4 else tensor
+from brainsynth.utilities import apply_affine, unsqueeze_nd
 
 
 def load_dataset_subjects(filename):
@@ -41,7 +37,7 @@ def _load_image(
             f"Image {filename} has less than three dimensions (shape is {data.shape})"
         )
     elif data.ndim == 3:  # (x,y,z) -> (c,x,y,z)
-        data = atleast_4d(data)
+        data = unsqueeze_nd(data, 4)
     elif data.ndim == 4:  # (x,y,z,c) -> (c,x,y,z)
         data = data.permute((3, 0, 1, 2)).contiguous()
     elif data.ndim > 4:
@@ -66,7 +62,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         target_vertices: dict | None = {},
         target_faces: dict | None = {},
         template_surface: dict | None = {},
-        return_affine: bool = False,
+        return_affine: bool = True,
         randomize_hemisphere: bool = False,
         exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
@@ -482,6 +478,54 @@ class XDataset(torch.utils.data.Dataset):
         return images
 
 
+class PredictionDatasetImageOnly(torch.utils.data.Dataset):
+    def __init__(self, images: list | tuple[Path, str], conform: bool = False):
+        """Dataset formed from a list of images and transformations.
+
+
+        Parameters
+        ----------
+
+        conform: bool
+            If the linear part of the affine matrix is not equal to identity,
+            resample the image such that it is (uses
+            nibabel.processing.conform). If false, the image is assumed to be
+            correctly preprocessed.
+
+        """
+        self.images = images
+        self.conform = conform
+
+        # (8) from https://surfer.nmr.mgh.harvard.edu/fswiki/CoordinateSystems
+        # mni305_to_mni152 = torch.tensor(
+        #     [
+        #         [0.9975, -0.0073, 0.0176, -0.0429],
+        #         [0.0146, 1.00090003, -0.0024, 1.54960001],
+        #         [-0.013, -0.0093, 0.9971, 1.18400002],
+        #         [0.0, 0.0, 0.0, 1.0],
+        #     ]
+        # )
+
+    def preprocess_image(self, img):
+        # Apply conform if the linear part of the affine deviates identity,
+        # i.e., we want 1 mm voxels aligned the major axes in RAS orientation.
+        if self.conform and not np.allclose(img.affine[:3, :3], np.identity(3)):
+            img = nibabel.processing.conform(nib.funcs.squeeze_image(img))
+        return img
+
+    def load_image(self, index):
+        img = nib.load(self.images[index])
+        img = self.preprocess_image(img)
+        return _load_image(img, torch.float, return_affine=True)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, index):
+        image, vox2mri = self.load_image(index)
+        return image, vox2mri
+
+
 class PredictionDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -526,29 +570,14 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.mni_transform_loader = mni_transform_loader
 
         self.template = {}
-        self.template_meta = {}
+        # self.template_meta = {}
 
-        # FSAVERAGE
-        # for h in self.hemi:
-        #     v, _, m = nib.freesurfer.read_geometry(
-        #         brainsynth.resources_dir / f"{h}.white.smooth", read_metadata=True
-        #     )
-        #     self.template[h] = torch.tensor(v[:nv_template].astype(np.float32))
-        #     self.template_meta[h] = m
-
-        # TOPOFIT
-        v, _, m = nib.freesurfer.read_geometry(
-            brainsynth.resources.resources_dir / "cortex-int-lh.srf", read_metadata=True
-        )
-        flip_x = np.array([-1, 1, 1])
-        for h in self.hemi:
-            if h == "lh":
-                self.template[h] = torch.tensor(v[:nv_template].astype(np.float32))
-            elif h == "rh":
-                self.template[h] = torch.tensor(
-                    (v[:nv_template] * flip_x).astype(np.float32)
-                )
-            self.template_meta[h] = m
+        self.template = {
+            h: brainsynth.resources.load_cortical_template(h, "white")["vertices"][
+                :nv_template
+            ]
+            for h in ("lh", "rh")
+        }
 
         # (8) from https://surfer.nmr.mgh.harvard.edu/fswiki/CoordinateSystems
         mni305_to_mni152 = torch.tensor(
@@ -629,7 +658,7 @@ class AlignmentDataset(SynthesizedDataset):
 
     def __getitem__(self, index):
         subject = self.subjects[index]
-        image, vox2mri = self.load_images(subject, return_affine=True)
+        image, vox2mri = self.load_images(subject)
         affines = self.load_transformation(subject)
         return image, vox2mri, affines
 
