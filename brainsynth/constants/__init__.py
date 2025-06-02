@@ -5,6 +5,18 @@ from typing import Callable
 
 import torch
 
+FREESURFER_VOLUME_INFO = dict(
+    head=[2, 0, 20],
+    valid="1  # volume info valid",
+    filename="vol.nii",
+    voxelsize=[1, 1, 1],
+    volume=(256, 256, 256),
+    xras=[-1, 0, 0],
+    yras=[0, 0, -1],
+    zras=[0, 1, 0],
+    cras=[0, 0, 0],
+)
+
 # neutral labels are labels that are not lateralized
 # NNeutralLabels = namedtuple("NNeutralLabels", ("incl_csf", "excl_csf", "wmgm"))
 # n_neutral_labels = NNeutralLabels(incl_csf=7, excl_csf=6, wmgm=1)
@@ -14,10 +26,11 @@ hemispheres = ("lh", "rh")
 # Mapped inputs
 
 MappedInputKeys = namedtuple(
-    "MappedInputKeys", ["image", "surface", "initial_vertices", "state", "affine"]
+    "MappedInputKeys",
+    ["image", "surface", "initial_vertices", "state", "affine", "output"],
 )
 mapped_input_keys = MappedInputKeys(
-    "image", "surface", "initial_vertices", "state", "affine"
+    "image", "surface", "initial_vertices", "state", "affine", "output"
 )
 
 
@@ -248,8 +261,10 @@ class SurfaceSettings:
             if types is None:
                 out[h] = ".".join((h, *remain))
             else:
-                for t in types:
-                    out[(h, t)] = ".".join((h, t, *remain))
+                out = {
+                    t: {h: ".".join((h, t, *remain)) for h in hemispheres}
+                    for t in types
+                }
         return out
 
 

@@ -1,3 +1,4 @@
+from collections import ChainMap
 from pathlib import Path
 from typing import Callable
 
@@ -59,11 +60,9 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         images: None | list | tuple = None,
         load_mask: bool | str = False,
         ds_structure: str = "tree",
-        target_vertices: dict | None = {},
-        target_faces: dict | None = {},
-        template_surface: dict | None = {},
+        surfaces: list[dict] | dict | None = {},
         return_affine: bool = True,
-        randomize_hemisphere: bool = False,
+        # randomize_hemisphere: bool = False,
         exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
     ):
@@ -113,6 +112,25 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             exists for a particular subject, make a mask where everything is
             valid. (`force` is useful when batch size > 1 as torch cannot
             collate the data if some subjects have masks and others not.)
+        surfaces :
+            for example
+                [
+                    dict(
+                        types="white",
+                        resolution=6,
+                        name="resampled",
+                    ),
+                    dict(
+                        types="pial",
+                        resolution=6,
+                        name="resampled",
+                    ),
+                    dict(
+                        types="template",
+                        resolution=0,
+                    )
+                ]
+
         """
         self.load_mask = load_mask
 
@@ -122,10 +140,8 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         self._initialize_image_settings(images)
         self.return_affine = return_affine
 
-        self.randomize_hemisphere = randomize_hemisphere
-        self._initialize_surface_settings(
-            target_vertices, target_faces, template_surface
-        )
+        # self.randomize_hemisphere = randomize_hemisphere
+        self._initialize_surface_settings(surfaces)
 
         match synthesizer:
             case Synthesizer():
@@ -194,86 +210,22 @@ class SynthesizedDataset(torch.utils.data.Dataset):
     def _initialize_image_settings(self, images):
         self.images = list(IMAGE.images._fields) if images is None else list(images)
 
-    def _initialize_surface_settings(
-        self, target_vertices_kwargs, target_faces_kwargs, template_surface_kwargs
-    ):
-        self.hemispheres = None
-
-        # Target vertices
-        if target_vertices_kwargs is None:
-            self.target_vertices_files = {}
+    def _initialize_surface_settings(self, surface_kwargs):
+        if surface_kwargs is None:
+            self.surface_files = {}
         else:
-            kwargs = dict(
-                hemispheres=SURFACE.hemispheres,
-                types=("white", "pial"),
-                resolution=6,
-                name="resampled",
+            if isinstance(surface_kwargs, dict):
+                surface_kwargs = [surface_kwargs]
+
+            for kw in surface_kwargs:
+                if (k := "hemispheres") in kw:
+                    if kw[k] == "both":
+                        kw[k] = SURFACE.hemispheres
+                else:
+                    kw[k] = SURFACE.hemispheres
+            self.surface_files = dict(
+                ChainMap(*[SURFACE.get_files(**kw) for kw in surface_kwargs])
             )
-            if isinstance(target_vertices_kwargs, dict):
-                if "hemispheres" in target_vertices_kwargs:
-                    if target_vertices_kwargs["hemispheres"] == "both":
-                        target_vertices_kwargs["hemispheres"] = SURFACE.hemispheres
-                    elif isinstance(v := target_vertices_kwargs["hemispheres"], str):
-                        target_vertices_kwargs["hemispheres"] = [v]
-                if "types" in target_vertices_kwargs:
-                    v = target_vertices_kwargs["types"]
-                    target_vertices_kwargs["types"] = [v] if isinstance(v, str) else v
-                kwargs |= target_vertices_kwargs
-            self.target_surface_kwargs = kwargs
-            self.target_vertices_files = SURFACE.get_files(**kwargs)
-
-            self.hemispheres = kwargs["hemispheres"]
-
-        # Target faces
-        # if target_faces_kwargs is None:
-        #     self.target_faces_files = {}
-        # else:
-        #     kwargs = dict(
-        #         hemispheres=SURFACE.hemispheres,
-        #         types=("faces",),
-        #         resolution = None,
-        #         name = None,
-        #     )
-        #     if isinstance(target_faces_kwargs, dict):
-        #         if "hemispheres" in target_faces_kwargs:
-        #             if target_faces_kwargs["hemispheres"] == "both":
-        #                 target_faces_kwargs["hemispheres"] = SURFACE.hemispheres
-        #             elif isinstance(v := target_faces_kwargs["hemispheres"], str):
-        #                 target_faces_kwargs["hemispheres"] = [v]
-        #         if "types" in target_faces_kwargs:
-        #             v = target_faces_kwargs["types"]
-        #             target_faces_kwargs["types"] = [v] if isinstance(v, str) else v
-        #         kwargs |= target_faces_kwargs
-        #     self.target_surface_kwargs = kwargs
-        #     self.target_faces_files = SURFACE.get_files(**kwargs)
-        #     if self.hemispheres is None:
-        #         self.hemispheres = kwargs["hemispheres"]
-
-        # Initial surface
-        if template_surface_kwargs is None:
-            self.template_surface_files = {}
-        else:
-            kwargs = dict(
-                hemispheres=SURFACE.hemispheres,
-                types="template",
-                resolution=0,
-            )
-            if isinstance(template_surface_kwargs, dict):
-                if "hemispheres" in template_surface_kwargs:
-                    if template_surface_kwargs["hemispheres"] == "both":
-                        template_surface_kwargs["hemispheres"] = SURFACE.hemispheres
-                    elif isinstance(v := template_surface_kwargs["hemispheres"], str):
-                        template_surface_kwargs["hemispheres"] = [v]
-                if "types" in template_surface_kwargs:
-                    v = template_surface_kwargs["types"]
-                    if isinstance(v, (list, tuple)):
-                        assert len(v) == 1
-                        template_surface_kwargs["types"] = v[0]
-                kwargs |= template_surface_kwargs
-            self.hemispheres = kwargs["hemispheres"]
-            assert all(i == j for i, j in zip(kwargs["hemispheres"], self.hemispheres))
-            self.template_surface_kwargs = kwargs
-            self.template_surface_files = SURFACE.get_files(**kwargs)
 
     def __len__(self):
         return len(self.subjects)
@@ -284,15 +236,13 @@ class SynthesizedDataset(torch.utils.data.Dataset):
     @staticmethod
     def extract_vertices(surfaces):
         return {
-            h: {s: v[0] for s, v in hemisphere.items()}
-            for h, hemisphere in surfaces.items()
+            t: {h: v[0] for h, v in surface.items()} for t, surface in surfaces.items()
         }
 
     @staticmethod
     def extract_faces(surfaces):
         return {
-            h: {s: v[1] for s, v in hemisphere.items()}
-            for h, hemisphere in surfaces.items()
+            t: {h: v[1] for h, v in surface.items()} for t, surface in surfaces.items()
         }
 
     @staticmethod
@@ -303,7 +253,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
     def load_data(self, subject):
         images, affines = self.load_images(subject)
-        surfaces, initial_vertices = self.load_surfaces(subject)
+        surfaces = self.load_surfaces(subject)
 
         if self.xdataset is not None:
             # select a random subject from xdataset
@@ -313,10 +263,10 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             images |= {f"other:{k}": v for k, v in ximages.items()}
 
         if self.synthesizer is None:
-            return images, affines, surfaces, initial_vertices
+            return images, affines, surfaces
         else:
             with torch.no_grad():
-                return self.synthesizer(images, surfaces, initial_vertices, affines)
+                return self.synthesizer(images, affines, surfaces)
 
     def load_images(self, subject):
         images = {}
@@ -347,24 +297,9 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         return images, affines
 
     def load_surfaces(self, subject):
-        if self.randomize_hemisphere:
-            surface_hemi = [SURFACE.hemispheres[torch.randint(0, 2, (1,))]]
-        else:
-            surface_hemi = self.hemispheres
+        return self._load_surfaces(subject)
 
-        if len(self.target_vertices_files) > 0:
-            target_surfaces = self._load_target_surfaces(subject, surface_hemi)
-        else:
-            target_surfaces = {}
-
-        if len(self.template_surface_files) > 0:
-            template_vertices = self._load_template_surfaces(subject, surface_hemi)
-        else:
-            template_vertices = {}
-
-        return target_surfaces, template_vertices
-
-    def _load_target_surfaces(self, subject, hemi):
+    def _load_surfaces(self, subject):
         # if self.load_faces:
         #     faces = {h: torch.load(self.get_surface_filename(subject, self.target_faces_files), weights_only=True) for h in hemi}
         # else:
@@ -379,38 +314,46 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         #     }
         #     for h in hemi
         # }
+        # return {
+        #     h: {
+        #         t: torch.load(
+        #             self.get_surface_filename(
+        #                 subject, self.target_vertices_files[h, t]
+        #             ),
+        #             weights_only=True,
+        #         )
+        #         for t in self.target_surface_kwargs["types"]
+        #     }
+        #     for h in hemi
+        # }
+
         return {
-            h: {
-                t: torch.load(
-                    self.get_surface_filename(
-                        subject, self.target_vertices_files[h, t]
-                    ),
-                    weights_only=True,
+            t: {
+                h: torch.load(
+                    self.get_surface_filename(subject, files), weights_only=True
                 )
-                for t in self.target_surface_kwargs["types"]
+                for h, files in surface.items()
             }
-            for h in hemi
+            for t, surface in self.surface_files.items()
         }
 
-    def _load_template_surfaces(self, subject, hemi):
-        if (t := self.template_surface_kwargs["types"]) is not None:
-            return {
-                h: torch.load(
-                    self.get_surface_filename(
-                        subject, self.template_surface_files[h, t]
-                    ),
-                    weights_only=True,
-                )
-                for h in hemi
-            }
-        else:
-            return {
-                h: torch.load(
-                    self.get_surface_filename(subject, self.template_surface_files[h]),
-                    weights_only=True,
-                )
-                for h in hemi
-            }
+    # def _load_template_surfaces(self, subject, hemi):
+    #     # if (t := self.template_surface_kwargs["types"]) is not None:
+    #     return {
+    #         h: torch.load(
+    #             self.get_surface_filename(subject, self.template_surface_files[h, t]),
+    #             weights_only=True,
+    #         )
+    #         for h in hemi
+    #     }
+    # else:
+    #     return {
+    #         h: torch.load(
+    #             self.get_surface_filename(subject, self.template_surface_files[h]),
+    #             weights_only=True,
+    #         )
+    #         for h in hemi
+    #     }
 
     def __repr__(self):
         return f"{self.__class__.__name__} {self.name} in {self.ds_dir / self.name}"

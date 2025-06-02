@@ -3,7 +3,15 @@ from typing import Type
 
 import torch
 
-from .base import BaseTransform, EnsureDevice, EnsureDType, IdentityTransform, RandomChoice, SequentialTransform, SwitchTransform
+from .base import (
+    BaseTransform,
+    EnsureDevice,
+    EnsureDType,
+    IdentityTransform,
+    RandomChoice,
+    SequentialTransform,
+    SwitchTransform,
+)
 from .contrast import (
     IntensityNormalization,
     RandBiasfield,
@@ -43,7 +51,61 @@ from .spatial import (
 from .label import MaskFromLabelImage, OneHotEncoding
 from .misc import ApplyFunction, ExtractDictKeys, Intersection, ServeValue, Uniform
 
-from brainsynth.constants import mapped_input_keys as mikeys
+from brainsynth.constants import mapped_input_keys as mik
+
+__all__ = [
+    "ApplyFunction",
+    "ExtractDictKeys",
+    "Intersection",
+    "ServeValue",
+    "Uniform",
+    "MaskFromLabelImage",
+    "OneHotEncoding",
+    "BaseTransform",
+    "EnsureDevice",
+    "EnsureDType",
+    "IdentityTransform",
+    "RandomChoice",
+    "SequentialTransform",
+    "SwitchTransform",
+    "IntensityNormalization",
+    "RandBiasfield",
+    "RandBlendImages",
+    "RandGammaTransform",
+    "RandMaskRemove",
+    "RandSaltAndPepperNoise",
+    "SynthesizeFromMultivariateNormal",
+    "SynthesizeIntensityImage",
+    "GaussianSmooth",
+    "AdjustAffineToSpatialCrop",
+    "BoundingBoxCorner",
+    "BoundingBoxSize",
+    "CenterFromString",
+    "CheckCoordsInside",
+    "Grid",
+    "GridCentering",
+    "GridNormalization",
+    "GridSample",
+    "PadTransform",
+    "RandLinearTransform",
+    "RandNonlinearTransform",
+    "RandResolution",
+    "RandTranslationTransform",
+    "RestrictBoundingBox",
+    "SpatialCrop",
+    "SpatialCropParameters",
+    "SpatialSize",
+    "SurfaceBoundingBox",
+    "TranslationTransform",
+    "Pipeline",
+    "PipelineModule",
+    "SubPipeline",
+    "SelectImage",
+    "SelectSurface",
+    "SelectAffine",
+    "SelectState",
+    "SelectOutput",
+]
 
 
 class InputSelectorError(Exception):
@@ -52,8 +114,7 @@ class InputSelectorError(Exception):
 
 class InputSelector(torch.nn.Module):
     def __init__(self, *args):
-        """General class for input selection from the mapped inputs dictionary.
-        """
+        """General class for input selection from the mapped inputs dictionary."""
         super().__init__()
         self.selection = args
 
@@ -93,10 +154,9 @@ class SelectImage(InputSelector):
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = mikeys.image
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.image])
+        return super().forward(mapped_inputs[mik.image])
 
 
 class SelectInitialVertices(InputSelector):
@@ -105,10 +165,9 @@ class SelectInitialVertices(InputSelector):
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = mikeys.initial_vertices
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.image])
+        return super().forward(mapped_inputs[mik.initial_vertices])
 
 
 class SelectState(InputSelector):
@@ -117,10 +176,9 @@ class SelectState(InputSelector):
         inputs dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = mikeys.state
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.image])
+        return super().forward(mapped_inputs[mik.state])
 
 
 class SelectOutput(InputSelector):
@@ -129,10 +187,9 @@ class SelectOutput(InputSelector):
         inputs dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.image = "output"
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.image])
+        return super().forward(mapped_inputs[mik.output])
 
 
 class SelectSurface(InputSelector):
@@ -141,10 +198,9 @@ class SelectSurface(InputSelector):
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.surface = mikeys.surface
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.surface])
+        return super().forward(mapped_inputs[mik.surface])
 
 
 class SelectAffine(InputSelector):
@@ -153,10 +209,10 @@ class SelectAffine(InputSelector):
         dictionary.
         """
         super().__init__(*args, **kwargs)
-        self.affine = mikeys.affine
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[self.affine])
+        return super().forward(mapped_inputs[mik.affine])
+
 
 class PipelineModule:
     def __init__(self, transform: Type[torch.nn.Module], *args, **kwargs) -> None:
@@ -217,7 +273,9 @@ class SubPipeline(torch.nn.Module):
         self.transforms = list(transforms)
         self.is_initialized = False
 
-    def initialize(self, mapped_inputs: dict[str, dict[str, torch.Tensor]], force: bool = False):
+    def initialize(
+        self, mapped_inputs: dict[str, dict[str, torch.Tensor]], force: bool = False
+    ):
         """Initialize PipelineModules and Pipelines."""
         if self.is_initialized and not force:
             return
@@ -244,27 +302,33 @@ class SubPipeline(torch.nn.Module):
                 x = t(x)
         return x
 
-    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]], x):
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]], output: dict):
         self.initialize(mapped_inputs)
         for t in self.transforms:
-            x = self._run_element(t, mapped_inputs, x)
-        return x
+            output = self._run_element(t, mapped_inputs, output)
+        return output
 
 
 class Pipeline(SubPipeline):
     def __init__(
-            self,
-            *transforms,
-            unpack_inputs: bool = True,
-            skip_on_InputSelectorError: bool = False,
-        ):
+        self,
+        *transforms,
+        unpack_inputs: bool = True,
+        skip_on_InputSelectorError: bool = False,
+    ):
         """Pipeline class. The first step of a pipeline is to select the input
         to transform. Subsequent steps define the transformations applied to
-        this input."""
+        this input.
+        """
         super().__init__(*transforms)
         self.unpack_inputs = unpack_inputs
         self.skip_on_InputSelectorError = skip_on_InputSelectorError
-        valid_first_transform = (InputSelector, ServeValue, PipelineModule, RandomChoice)
+        valid_first_transform = (
+            InputSelector,
+            ServeValue,
+            PipelineModule,
+            RandomChoice,
+        )
         assert isinstance(
             self.transforms[0], valid_first_transform
         ), f"The first transform of a Pipeline must be one of {valid_first_transform} but got {type(self.transforms[0])}."
@@ -291,7 +355,10 @@ class Pipeline(SubPipeline):
         if self.unpack_inputs:
             match x:
                 case dict():
-                    x = {k: self._transform_input(transforms, mapped_inputs, v) for k,v in x.items()}
+                    x = {
+                        k: self._transform_input(transforms, mapped_inputs, v)
+                        for k, v in x.items()
+                    }
                 # case list() | tuple():
                 #     x = [self._transform_input(transforms, mapped_inputs, v) for v in x]
                 case _:

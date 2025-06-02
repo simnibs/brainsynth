@@ -10,18 +10,21 @@ class BaseTransform(torch.nn.Module):
 class IdentityTransform(BaseTransform):
     def __init__(self):
         super().__init__()
+
     def forward(self, x):
         return x
+
 
 class SequentialTransform(BaseTransform):
     def __init__(self, *transforms):
         super().__init__()
         self.transforms = tuple(transforms)
 
-    def forward(self, x = None):
+    def forward(self, x=None):
         for transform in self.transforms:
             x = transform() if x is None else transform(x)
         return x
+
 
 class RandomizableTransform(BaseTransform):
     """Similar to monai.transforms.RandomizableTransform but using torch."""
@@ -50,7 +53,7 @@ class RandomChoice(BaseTransform):
         super().__init__(device)
         n = len(args)
         if prob is None:
-            self.prob = torch.full((n,), 1/n, device = device)
+            self.prob = torch.full((n,), 1 / n, device=device)
         else:
             self.prob = torch.tensor(prob, device=device)
         assert self.prob.sum() == 1.0
@@ -71,7 +74,7 @@ class SwitchTransform(BaseTransform):
         super().__init__(device)
         n = len(transforms)
         if prob is None:
-            self.prob = torch.full((n,), 1/n, device = device)
+            self.prob = torch.full((n,), 1 / n, device=device)
         else:
             self.prob = torch.tensor(prob, device=device)
         assert self.prob.sum() == 1.0
@@ -80,6 +83,17 @@ class SwitchTransform(BaseTransform):
 
     def forward(self, x):
         return self.transforms[torch.multinomial(self.prob, 1)](x)
+
+
+class IfTransform(BaseTransform):
+    def __init__(self, condition, *transforms, device: None | torch.device = None):
+        super().__init__(device)
+        self.condition = condition
+        self.transforms = transforms
+
+    def forward(self, x):
+        if self.condition:
+            return self.transforms(x)
 
 
 class EnsureDevice(BaseTransform):
@@ -92,7 +106,7 @@ class EnsureDevice(BaseTransform):
         elif isinstance(x, (tuple, list)):
             return [self.forward(i) for i in x]
         elif isinstance(x, dict):
-            return {k: self.forward(v) for k,v in x.items()}
+            return {k: self.forward(v) for k, v in x.items()}
 
 
 class EnsureDType(BaseTransform):
@@ -106,4 +120,4 @@ class EnsureDType(BaseTransform):
         elif isinstance(x, (tuple, list)):
             return [self.forward(i) for i in x]
         elif isinstance(x, dict):
-            return {k: self.forward(v) for k,v in x.items()}
+            return {k: self.forward(v) for k, v in x.items()}

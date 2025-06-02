@@ -2,9 +2,99 @@ from functools import partial
 import torch
 
 import brainsynth
+from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
 from brainsynth.constants import IMAGE
+
+from dataclasses import dataclass
+
+
+def recursive_dict_get(d: dict, k: tuple | str):
+    if isinstance(k, tuple):
+        return recursive_dict_get(d[k[0]], k[1:]) if len(k) > 1 else d[k[0]]
+    else:
+        return d[k]
+
+
+class Pipelines(dict):
+    def __init__(self, *args, **kwargs):
+        """Collection of pipelines in a dict style layout that can be executed
+        in sequence.
+        """
+        super().__init__(*args, **kwargs)
+
+    def execute(self, mapped_inputs: dict, output_key: str | tuple):
+        """Execute the pipelines. The output is stored in `mapped_inputs` which
+        means that previously computed items are available for subsequent steps."""
+        for k, pipeline in self.items():
+            print(output_key, k)
+            match pipeline:
+                case Pipeline():
+                    res = pipeline(mapped_inputs)
+                case Pipelines():
+                    res = {k: v(mapped_inputs) for k, v in pipeline.items()}
+                case None:
+                    res = None
+                case _:
+                    res = pipeline()
+            # If a pipeline was skipped (e.g., because the input did not exist,
+            # then `res` is None)
+
+            # if res is not None:
+            mapped_inputs[output_key][k] = res
+        return mapped_inputs[output_key]
+
+
+class StatePipelines(Pipelines):
+    """Pipelines which write to the `state` entry of `mapped_inputs`."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def execute(self, mapped_inputs: dict):
+        # If a pipeline was skipped (e.g., because the input did not exist,
+        # then `res` is None)
+        return super().execute(mapped_inputs, mikeys.state)
+
+
+@dataclass
+class OutputPipelines(Pipelines):
+    """Pipelines which write to the `output` entry of `mapped_inputs`."""
+
+    image: Pipeline | None = None
+    affine: Pipeline | None = None
+    images: Pipelines | None = None
+    surface: Pipeline | Pipelines | None = None
+
+    def __post_init__(self):
+        super().__init__(**vars(self))
+
+    def execute(self, mapped_inputs: dict):
+        out = super().execute(mapped_inputs, mikeys.output)
+        print(out.keys())
+        return SynthesizerOutput(**out)
+
+        # for k, pipeline in vars(self).items():
+        #     print(k, pipeline)
+        #     if pipeline is not None:
+        #         print(mapped_inputs[mikeys.output].keys())
+        #         mapped_inputs[mikeys.output][k] = (
+        #             pipeline(mapped_inputs)
+        #             if isinstance(pipeline, Pipeline)
+        #             else pipeline()
+        #         )
+        #         print(mapped_inputs[mikeys.output].keys())
+
+        # return
+
+
+@dataclass
+class SynthesizerOutput:
+    image: torch.Tensor
+    affine: torch.Tensor | None = None
+    images: dict[str, torch.Tensor] | None = None
+    surface: dict[str, dict[str, torch.Tensor]] | None = None
 
 
 class SynthBuilder:
@@ -25,10 +115,10 @@ class SynthBuilder:
     def build_resolution_transforms(self, *args, **kwargs):
         raise NotImplementedError
 
-    def build_state(self):
+    def build_state(self) -> StatePipelines:
         raise NotImplementedError
 
-    def build_output(self):
+    def build_output(self) -> OutputPipelines:
         raise NotImplementedError
 
     def build(self):
@@ -68,13 +158,13 @@ class PredictionBuilder(SynthBuilder):
     """Process an image called `image` and"""
 
     def build_state(self):
-        return dict(
+        return StatePipelines(
             in_size=Pipeline(
                 SelectImage("image"),
                 SpatialSize(),
             ),
             surface_bbox=Pipeline(
-                SelectInitialVertices(),
+                SelectSurface("template"),
                 SurfaceBoundingBox(),
                 unpack_inputs=False,
             ),
@@ -135,18 +225,18 @@ class PredictionBuilder(SynthBuilder):
         self.resolution_augmentation = IdentityTransform()
 
     def build_output(self):
-        return dict(
+        return OutputPipelines(
             image=Pipeline(
                 SelectImage("image"),
                 self.image_crop,
                 self.intensity_normalization,
             ),
-            initial_vertices=Pipeline(
-                SelectInitialVertices(),
+            affine=Pipeline(SelectAffine("image"), self.affine_adjuster),
+            surface=Pipeline(
+                SelectSurface(),
                 self.surface_translation,
                 skip_on_InputSelectorError=True,
             ),
-            affine=Pipeline(SelectAffine("image"), self.affine_adjuster),
         )
 
 
@@ -186,7 +276,7 @@ class DefaultSynth(SynthBuilder):
         self.inv_linear_transform = partial(self.linear_transform, inverse=True)
 
     def build_state(self):
-        return dict(
+        return StatePipelines(
             # spacing of photos (slices)
             photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
             # available images
@@ -207,7 +297,7 @@ class DefaultSynth(SynthBuilder):
             ),
             # SurfaceBoundingBox needs some work
             surface_bbox=Pipeline(
-                SelectInitialVertices(),
+                SelectSurface("template"),
                 SurfaceBoundingBox(),
                 unpack_inputs=False,
             ),
@@ -271,6 +361,24 @@ class DefaultSynth(SynthBuilder):
             self.inv_nonlinear_transform,
             CheckCoordsInside(self.config.out_size, device=self.device),
         )
+        # (Affine) noise on vertex positions
+        self.surface_noise = SubPipeline(
+            RandLinearTransform(
+                max_rotation=5.0,
+                max_scale=0.05,
+                max_shear=0.05,
+                relative_to_input=True,
+                prob=0.5,
+                device=self.device,
+            ),
+            RandTranslationTransform(
+                x_range=[-3, 3],
+                y_range=[-3, 3],
+                z_range=[-3, 3],
+                prob=0.5,
+                device=self.device,
+            ),
+        )
 
     def build_intensity_transforms(self, extracerebral_augmentation: bool = True):
         if extracerebral_augmentation:
@@ -300,7 +408,7 @@ class DefaultSynth(SynthBuilder):
         resolution_sampler: str = "ResolutionSamplerDefault",
         resolution_sampler_kw: dict | None = None,
     ):
-        resolution_sampler_kw = resolution_sampler_kw or None
+        resolution_sampler_kw = resolution_sampler_kw or {}
 
         self.resolution_augmentation = PipelineModule(
             RandResolution,
@@ -359,42 +467,35 @@ class DefaultSynth(SynthBuilder):
             #     prob=0.5,
             #     device=self.device,
             # ),
-            # self.resolution_augmentation,
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
 
-    def build_surfaces(self):
-        return dict(
-            surface=Pipeline(
-                SelectSurface(),
+    def build_affine(self):
+        pass
+
+    def build_surface(self):
+        return Pipelines(
+            white=Pipeline(
+                SelectSurface("white"),
                 self.surface_deformation,
                 skip_on_InputSelectorError=True,
             ),
-            initial_vertices=Pipeline(
-                SelectInitialVertices(),
+            pial=Pipeline(
+                SelectSurface("pial"),
                 self.surface_deformation,
-                # Noise on initial vertices
-                RandLinearTransform(
-                    max_rotation=5.0,
-                    max_scale=0.05,
-                    max_shear=0.05,
-                    relative_to_input=True,
-                    prob=0.5,
-                    device=self.device,
-                ),
-                RandTranslationTransform(
-                    x_range=[-3, 3],
-                    y_range=[-3, 3],
-                    z_range=[-3, 3],
-                    prob=0.5,
-                    device=self.device,
-                ),
+                skip_on_InputSelectorError=True,
+            ),
+            template=Pipeline(
+                SelectSurface("template"),
+                self.surface_deformation,
+                self.surface_noise,  # add noise
                 skip_on_InputSelectorError=True,
             ),
         )
 
     def build_images(self):
-        return dict(
+        return Pipelines(
             t1w=Pipeline(
                 SelectImage("t1w"),
                 self.extracerebral_augmentation,
@@ -434,14 +535,15 @@ class DefaultSynth(SynthBuilder):
         )
 
     def build_output(self):
-        return dict(
-            image_hires=self.build_image(),
-            image=Pipeline(
-                SelectOutput("image_hires"),
-                self.resolution_augmentation,
-            ),
-            **self.build_images(),
-            **self.build_surfaces(),
+        return OutputPipelines(
+            image=self.build_image(),
+            # image=Pipeline(
+            #     SelectOutput("image_hires"),
+            #     self.resolution_augmentation,
+            # ),
+            affine=self.build_affine(),
+            images=self.build_images(),
+            surface=self.build_surface(),
         )
 
 
@@ -532,7 +634,7 @@ class OnlySelect(OnlySynth):
         )
 
     def build_output(self):
-        return dict(
+        return OutputPipelines(
             image_hires=self.build_image(),
             image=Pipeline(
                 SelectOutput("image_hires"),
@@ -600,7 +702,7 @@ class CropSynth(SynthBuilder):
     """Process an image called `image` and"""
 
     def build_state(self):
-        return dict(
+        return StatePipelines(
             available_images=Pipeline(
                 SelectImage(),
                 ExtractDictKeys(),
@@ -767,7 +869,7 @@ class CropSynth(SynthBuilder):
         )
 
     def build_output(self):
-        return dict(
+        return OutputPipelines(
             image=self.build_image(),
             **self.build_images(),
             affine=Pipeline(
@@ -805,7 +907,7 @@ class CropSelect(CropSynth):
         )
 
     def build_output(self):
-        return dict(
+        return OutputPipelines(
             image=self.build_image(),
             **self.build_images(),
             affine=Pipeline(
@@ -956,7 +1058,7 @@ class XSubSynth(DefaultSynth):
         )
 
     def build_state(self):
-        return dict(
+        return StatePipelines(
             # spacing of photos (slices)
             photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
             # available images
@@ -1093,7 +1195,7 @@ class XSubSynth(DefaultSynth):
         )
 
     def build_output(self):
-        return dict(
+        return OutputPipelines(
             t1w=Pipeline(
                 SelectImage("t1w"),
                 self.image_deformation,
@@ -1159,160 +1261,160 @@ class XSubSynthIso(XSubSynth):
         return IdentityTransform()
 
 
-class SaverioSynth(SynthBuilder):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        super().__init__(config)
+# class SaverioSynth(SynthBuilder):
+#     def __init__(self, config: SynthesizerConfig) -> None:
+#         super().__init__(config)
 
-    def initialize_spatial_transforms(self):
-        self.nonlinear_transform = RandNonlinearTransform(
-            self.config.out_size,
-            scale_min=0.03,  # 0.10,
-            scale_max=0.06,  # 0.15,
-            std_max=4.0,
-            exponentiate_field=True,
-            grid=self.config.grid,
-            prob=1.0,
-            device=self.device,
-        )
-        self.linear_transform = RandLinearTransform(
-            max_rotation=15.0,
-            max_scale=0.2,
-            max_shear=0.2,
-            prob=1.0,
-            device=self.device,
-        )
+#     def initialize_spatial_transforms(self):
+#         self.nonlinear_transform = RandNonlinearTransform(
+#             self.config.out_size,
+#             scale_min=0.03,  # 0.10,
+#             scale_max=0.06,  # 0.15,
+#             std_max=4.0,
+#             exponentiate_field=True,
+#             grid=self.config.grid,
+#             prob=1.0,
+#             device=self.device,
+#         )
+#         self.linear_transform = RandLinearTransform(
+#             max_rotation=15.0,
+#             max_scale=0.2,
+#             max_shear=0.2,
+#             prob=1.0,
+#             device=self.device,
+#         )
 
-    def build_state(self):
-        return dict(
-            # available images
-            available_images=Pipeline(
-                SelectImage(),
-                ExtractDictKeys(),
-                unpack_inputs=False,
-            ),
-            # the size of the input image(s)
-            # (this should be an image that is always available)
-            in_size=Pipeline(
-                PipelineModule(
-                    SelectImage,
-                    # doesn't matter which is selected - all should be the same size!
-                    SelectState("available_images", 0),
-                ),
-                SpatialSize(),
-            ),
-            # where to center the (output) FOV in the input image space
-            out_center=Pipeline(
-                ServeValue(self.config.out_center_str),
-                PipelineModule(
-                    CenterFromString,
-                    SelectState("in_size"),
-                    align_corners=self.config.align_corners,
-                ),
-                # RandTranslationTransform(
-                #     x_range=[-10, 10],
-                #     y_range=[-10, 10],
-                #     z_range=[-10, 10],
-                #     prob=0.5,
-                #     device=self.device,
-                # ),
-            ),
-            # the deformed grid
-            resampling_grid=Pipeline(
-                ServeValue(self.config.centered_grid),
-                self.nonlinear_transform,
-                self.linear_transform,
-                PipelineModule(
-                    TranslationTransform,
-                    SelectState("out_center"),
-                    device=self.device,
-                ),
-            ),
-        )
+#     def build_state(self):
+#         return dict(
+#             # available images
+#             available_images=Pipeline(
+#                 SelectImage(),
+#                 ExtractDictKeys(),
+#                 unpack_inputs=False,
+#             ),
+#             # the size of the input image(s)
+#             # (this should be an image that is always available)
+#             in_size=Pipeline(
+#                 PipelineModule(
+#                     SelectImage,
+#                     # doesn't matter which is selected - all should be the same size!
+#                     SelectState("available_images", 0),
+#                 ),
+#                 SpatialSize(),
+#             ),
+#             # where to center the (output) FOV in the input image space
+#             out_center=Pipeline(
+#                 ServeValue(self.config.out_center_str),
+#                 PipelineModule(
+#                     CenterFromString,
+#                     SelectState("in_size"),
+#                     align_corners=self.config.align_corners,
+#                 ),
+#                 # RandTranslationTransform(
+#                 #     x_range=[-10, 10],
+#                 #     y_range=[-10, 10],
+#                 #     z_range=[-10, 10],
+#                 #     prob=0.5,
+#                 #     device=self.device,
+#                 # ),
+#             ),
+#             # the deformed grid
+#             resampling_grid=Pipeline(
+#                 ServeValue(self.config.centered_grid),
+#                 self.nonlinear_transform,
+#                 self.linear_transform,
+#                 PipelineModule(
+#                     TranslationTransform,
+#                     SelectState("out_center"),
+#                     device=self.device,
+#                 ),
+#             ),
+#         )
 
-    def build_spatial_transforms(self):
-        self.image_deformation = SubPipeline(
-            PipelineModule(
-                GridSample,
-                SelectState("resampling_grid"),
-                SelectState("in_size"),
-            ),
-        )
+#     def build_spatial_transforms(self):
+#         self.image_deformation = SubPipeline(
+#             PipelineModule(
+#                 GridSample,
+#                 SelectState("resampling_grid"),
+#                 SelectState("in_size"),
+#             ),
+#         )
 
-    def build_intensity_transforms(self):
-        self.intensity_normalization = IntensityNormalization()
+#     def build_intensity_transforms(self):
+#         self.intensity_normalization = IntensityNormalization()
 
-    def build_resolution_transforms(self):
-        # self.resolution_augmentation = PipelineModule(
-        #     RandResolution,
-        #     self.config.out_size,
-        #     self.config.in_res,
-        #     prob=0.75,
-        #     device=self.device,
-        # )
-        self.resolution_augmentation = IdentityTransform()
+#     def build_resolution_transforms(self):
+#         # self.resolution_augmentation = PipelineModule(
+#         #     RandResolution,
+#         #     self.config.out_size,
+#         #     self.config.in_res,
+#         #     prob=0.75,
+#         #     device=self.device,
+#         # )
+#         self.resolution_augmentation = IdentityTransform()
 
-    def build_image(self):
-        return Pipeline(
-            # Synthesize image
-            SelectImage("segmentation"),
-            SynthesizeIntensityImage(
-                mu_low=25.0,
-                mu_high=200.0,
-                sigma_global_scale=4.0,
-                sigma_local_scale=2.5,
-                pv_sigma_range=[0.5, 1.2],
-                pv_tail_length=3.0,
-                pv_from_distances=False,
-                min_cortical_contrast=10.0,
-                photo_mode=self.config.photo_mode,
-                device=self.device,
-            ),
-            RandGammaTransform(prob=0.33),
-            self.image_deformation,  # Transform to output FOV
-            RandBiasfield(
-                self.config.out_size,
-                scale_min=0.01,
-                scale_max=0.03,
-                std_min=0.0,
-                std_max=0.3,
-                photo_mode=self.config.photo_mode,
-                prob=0.75,
-                device=self.device,
-            ),
-            # Small, local intensity variations
-            # RandBiasfield(
-            #     self.config.out_size,
-            #     scale_min=0.10,
-            #     scale_max=0.20,
-            #     std_min=0.0,
-            #     std_max=0.15,
-            #     photo_mode=self.config.photo_mode,
-            #     prob=0.5,
-            #     device=self.device,
-            # ),
-            self.resolution_augmentation,
-            self.intensity_normalization,
-        )
+#     def build_image(self):
+#         return Pipeline(
+#             # Synthesize image
+#             SelectImage("segmentation"),
+#             SynthesizeIntensityImage(
+#                 mu_low=25.0,
+#                 mu_high=200.0,
+#                 sigma_global_scale=4.0,
+#                 sigma_local_scale=2.5,
+#                 pv_sigma_range=[0.5, 1.2],
+#                 pv_tail_length=3.0,
+#                 pv_from_distances=False,
+#                 min_cortical_contrast=10.0,
+#                 photo_mode=self.config.photo_mode,
+#                 device=self.device,
+#             ),
+#             RandGammaTransform(prob=0.33),
+#             self.image_deformation,  # Transform to output FOV
+#             RandBiasfield(
+#                 self.config.out_size,
+#                 scale_min=0.01,
+#                 scale_max=0.03,
+#                 std_min=0.0,
+#                 std_max=0.3,
+#                 photo_mode=self.config.photo_mode,
+#                 prob=0.75,
+#                 device=self.device,
+#             ),
+#             # Small, local intensity variations
+#             # RandBiasfield(
+#             #     self.config.out_size,
+#             #     scale_min=0.10,
+#             #     scale_max=0.20,
+#             #     std_min=0.0,
+#             #     std_max=0.15,
+#             #     photo_mode=self.config.photo_mode,
+#             #     prob=0.5,
+#             #     device=self.device,
+#             # ),
+#             self.resolution_augmentation,
+#             self.intensity_normalization,
+#         )
 
-    def build_images(self):
-        return dict(
-            t1w=Pipeline(
-                SelectImage("t1w"),
-                self.image_deformation,
-                self.intensity_normalization,
-                # This pipeline is allowed to fail if the input is not found
-                skip_on_InputSelectorError=True,
-            ),
-            seg=Pipeline(
-                SelectImage("segmentation"),
-                self.image_deformation,
-                OneHotEncoding(self.config.segmentation_num_labels),
-                skip_on_InputSelectorError=True,
-            ),
-        )
+#     def build_images(self):
+#         return dict(
+#             t1w=Pipeline(
+#                 SelectImage("t1w"),
+#                 self.image_deformation,
+#                 self.intensity_normalization,
+#                 # This pipeline is allowed to fail if the input is not found
+#                 skip_on_InputSelectorError=True,
+#             ),
+#             seg=Pipeline(
+#                 SelectImage("segmentation"),
+#                 self.image_deformation,
+#                 OneHotEncoding(self.config.segmentation_num_labels),
+#                 skip_on_InputSelectorError=True,
+#             ),
+#         )
 
-    def build_output(self):
-        return dict(
-            image=self.build_image(),
-            **self.build_images(),
-        )
+#     def build_output(self):
+#         return dict(
+#             image=self.build_image(),
+#             **self.build_images(),
+#         )
