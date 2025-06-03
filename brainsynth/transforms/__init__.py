@@ -156,29 +156,18 @@ class SelectImage(InputSelector):
         super().__init__(*args, **kwargs)
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[mik.image])
+        return super().forward(mapped_inputs[mik.images])
 
 
-class SelectInitialVertices(InputSelector):
+class SelectAffine(InputSelector):
     def __init__(self, *args, **kwargs):
-        """Convenience class to select initial vertices from the mapped inputs
+        """Convenience class to select affines from the mapped inputs
         dictionary.
         """
         super().__init__(*args, **kwargs)
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[mik.initial_vertices])
-
-
-class SelectState(InputSelector):
-    def __init__(self, *args, **kwargs):
-        """Convenience class to select from the state entry in the mapped
-        inputs dictionary.
-        """
-        super().__init__(*args, **kwargs)
-
-    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[mik.state])
+        return super().forward(mapped_inputs[mik.affines])
 
 
 class SelectOutput(InputSelector):
@@ -192,6 +181,17 @@ class SelectOutput(InputSelector):
         return super().forward(mapped_inputs[mik.output])
 
 
+class SelectState(InputSelector):
+    def __init__(self, *args, **kwargs):
+        """Convenience class to select from the state entry in the mapped
+        inputs dictionary.
+        """
+        super().__init__(*args, **kwargs)
+
+    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
+        return super().forward(mapped_inputs[mik.state])
+
+
 class SelectSurface(InputSelector):
     def __init__(self, *args, **kwargs):
         """Convenience class to select surfaces from the mapped inputs
@@ -200,18 +200,7 @@ class SelectSurface(InputSelector):
         super().__init__(*args, **kwargs)
 
     def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[mik.surface])
-
-
-class SelectAffine(InputSelector):
-    def __init__(self, *args, **kwargs):
-        """Convenience class to select affines from the mapped inputs
-        dictionary.
-        """
-        super().__init__(*args, **kwargs)
-
-    def forward(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):
-        return super().forward(mapped_inputs[mik.affine])
+        return super().forward(mapped_inputs[mik.surfaces])
 
 
 class PipelineModule:

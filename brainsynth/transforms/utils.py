@@ -6,6 +6,7 @@ import functools
 #     out = out.contiguous() if as_contiguous else out
 #     return out
 
+
 def channel_last(x):
     n = len(x.size())
     match n:
@@ -19,22 +20,23 @@ def channel_last(x):
             raise NotImplementedError("Only implemented for 4-D and 5-D tensors.")
 
 
-def function_recursion_dict(func):
+def recurse_in_dict(func):
     @functools.wraps(func)
-    def wrapper(x):
+    def wrapper(x, *args, **kwargs):
         if isinstance(x, dict):
-            return {k:wrapper(v) for k,v in x.items()}
+            return {k: wrapper(v, *args, **kwargs) for k, v in x.items()}
         else:
-            return func(x)
+            return func(x, *args, **kwargs)
+
     return wrapper
 
 
 def method_recursion_dict(func):
     @functools.wraps(func)
-    def wrapper(self, x):
+    def wrapper(self, x, *args, **kwargs):
         if isinstance(x, dict):
-            return {k:wrapper(self, v) for k,v in x.items()}
+            return {k: wrapper(self, v, *args, **kwargs) for k, v in x.items()}
         else:
-            return func(self, x)
-    return wrapper
+            return func(self, x, *args, **kwargs)
 
+    return wrapper
