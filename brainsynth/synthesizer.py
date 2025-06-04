@@ -3,9 +3,12 @@ import torch
 from brainsynth.constants import mapped_input_keys as mik
 from brainsynth.config import SynthesizerConfig
 import brainsynth.config.synthesizer_builder
-from brainsynth.transforms import EnsureDevice, Pipeline
+from brainsynth.transforms import EnsureDevice
 
 from brainsynth.config.synthesizer_builder import SynthesizerOutput
+
+from brainsynth.transforms.utils import recursive_function
+from brainsynth.utilities import squeeze_nd
 
 
 class Synthesizer(torch.nn.Module):
@@ -55,10 +58,20 @@ class Synthesizer(torch.nn.Module):
     ) -> SynthesizerOutput:
         surfaces = surfaces or {}
         affines = affines or {}
+
+        # Remove batch dim
+        r_squeeze_nd = recursive_function(squeeze_nd)
+
+        images = r_squeeze_nd(images, n=4, dim=0)
+        if affines is not None:
+            affines = r_squeeze_nd(affines, n=2, dim=0)
+        if surfaces is not None:
+            surfaces = r_squeeze_nd(surfaces, n=2, dim=0)
+
         mapped_inputs = {
-            mik.image: self.ensure_device(images),
-            mik.affine: self.ensure_device(affines),
-            mik.surface: self.ensure_device(surfaces),
+            mik.images: self.ensure_device(images),
+            mik.affines: self.ensure_device(affines),
+            mik.surfaces: self.ensure_device(surfaces),
             mik.state: {},
             mik.output: {},
         }
@@ -69,4 +82,7 @@ class Synthesizer(torch.nn.Module):
         _ = state.execute(mapped_inputs)
 
         # Generate the output
-        return output.execute(mapped_inputs)
+        out = output.execute(mapped_inputs)
+        out.unsqueeze()  # Add batch dim
+
+        return out

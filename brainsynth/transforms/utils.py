@@ -20,7 +20,7 @@ def channel_last(x):
             raise NotImplementedError("Only implemented for 4-D and 5-D tensors.")
 
 
-def recurse_in_dict(func):
+def recursive_function(func):
     @functools.wraps(func)
     def wrapper(x, *args, **kwargs):
         if isinstance(x, dict):
@@ -31,7 +31,7 @@ def recurse_in_dict(func):
     return wrapper
 
 
-def method_recursion_dict(func):
+def recursive_method(func):
     @functools.wraps(func)
     def wrapper(self, x, *args, **kwargs):
         if isinstance(x, dict):

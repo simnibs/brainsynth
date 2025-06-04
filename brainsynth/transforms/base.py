@@ -85,17 +85,6 @@ class SwitchTransform(BaseTransform):
         return self.transforms[torch.multinomial(self.prob, 1)](x)
 
 
-class IfTransform(BaseTransform):
-    def __init__(self, condition, *transforms, device: None | torch.device = None):
-        super().__init__(device)
-        self.condition = condition
-        self.transforms = transforms
-
-    def forward(self, x):
-        if self.condition:
-            return self.transforms(x)
-
-
 class EnsureDevice(BaseTransform):
     def __init__(self, device: None | torch.device = None) -> None:
         super().__init__(device)

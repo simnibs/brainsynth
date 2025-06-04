@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import partial
 import torch
 
@@ -5,16 +6,8 @@ import brainsynth
 from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
+from brainsynth.transforms.utils import recursive_function
 from brainsynth.constants import IMAGE
-
-from dataclasses import dataclass
-
-
-def recursive_dict_get(d: dict, k: tuple | str):
-    if isinstance(k, tuple):
-        return recursive_dict_get(d[k[0]], k[1:]) if len(k) > 1 else d[k[0]]
-    else:
-        return d[k]
 
 
 class Pipelines(dict):
@@ -24,26 +17,32 @@ class Pipelines(dict):
         """
         super().__init__(*args, **kwargs)
 
-    def execute(self, mapped_inputs: dict, output_key: str | tuple):
+    def execute(self, mapped_inputs: dict, key: str | tuple, prune_none: bool = True):
         """Execute the pipelines. The output is stored in `mapped_inputs` which
-        means that previously computed items are available for subsequent steps."""
+        means that previously computed items are available for subsequent
+        steps.
+        """
         for k, pipeline in self.items():
-            print(output_key, k)
             match pipeline:
                 case Pipeline():
                     res = pipeline(mapped_inputs)
                 case Pipelines():
-                    res = {k: v(mapped_inputs) for k, v in pipeline.items()}
+                    if prune_none:
+                        res = {}
+                        for kk, vv in pipeline.items():
+                            out = vv(mapped_inputs)
+                            if out is not None:
+                                res[kk] = out
+                    else:
+                        res = {kk: vv(mapped_inputs) for kk, vv in pipeline.items()}
                 case None:
                     res = None
                 case _:
                     res = pipeline()
             # If a pipeline was skipped (e.g., because the input did not exist,
             # then `res` is None)
-
-            # if res is not None:
-            mapped_inputs[output_key][k] = res
-        return mapped_inputs[output_key]
+            mapped_inputs[key][k] = res
+        return mapped_inputs[key]
 
 
 class StatePipelines(Pipelines):
@@ -65,36 +64,33 @@ class OutputPipelines(Pipelines):
     image: Pipeline | None = None
     affine: Pipeline | None = None
     images: Pipelines | None = None
-    surface: Pipeline | Pipelines | None = None
+    surfaces: Pipeline | Pipelines | None = None
 
     def __post_init__(self):
         super().__init__(**vars(self))
 
     def execute(self, mapped_inputs: dict):
         out = super().execute(mapped_inputs, mikeys.output)
-        print(out.keys())
         return SynthesizerOutput(**out)
-
-        # for k, pipeline in vars(self).items():
-        #     print(k, pipeline)
-        #     if pipeline is not None:
-        #         print(mapped_inputs[mikeys.output].keys())
-        #         mapped_inputs[mikeys.output][k] = (
-        #             pipeline(mapped_inputs)
-        #             if isinstance(pipeline, Pipeline)
-        #             else pipeline()
-        #         )
-        #         print(mapped_inputs[mikeys.output].keys())
-
-        # return
 
 
 @dataclass
-class SynthesizerOutput:
+class SynthesizerOutput(dict):
     image: torch.Tensor
     affine: torch.Tensor | None = None
     images: dict[str, torch.Tensor] | None = None
-    surface: dict[str, dict[str, torch.Tensor]] | None = None
+    surfaces: dict[str, dict[str, torch.Tensor]] | None = None
+
+    def unsqueeze(self, dim: int = 0):
+        r_unsqueeze = recursive_function(torch.unsqueeze)
+
+        self.image = self.image.unsqueeze(dim)
+        if self.affine is not None:
+            self.affine = self.affine.unsqueeze(dim)
+        if self.images is not None:
+            self.images = r_unsqueeze(self.images, dim)
+        if self.surfaces is not None:
+            self.surfaces = r_unsqueeze(self.surfaces, dim)
 
 
 class SynthBuilder:
@@ -155,18 +151,38 @@ class SynthBuilder:
 
 
 class PredictionBuilder(SynthBuilder):
-    """Process an image called `image` and"""
+    """Process"""
 
     def build_state(self):
         return StatePipelines(
+            # Select the first image and affine. Assert there is only one
+            image=Pipeline(
+                SelectImage(),
+                ExtractDictValues(),
+                AssertCondition(
+                    lambda x: len(x) == 1, "More than one selectable image is ambiguous"
+                ),
+                SelectEntry(0),
+                unpack_inputs=False,
+            ),
+            affine=Pipeline(
+                SelectAffine(),
+                ExtractDictValues(),
+                AssertCondition(
+                    lambda x: len(x) == 1, "More than one selectable image is ambiguous"
+                ),
+                SelectEntry(0),
+                unpack_inputs=False,
+            ),
             in_size=Pipeline(
-                SelectImage("image"),
+                SelectState("image"),
                 SpatialSize(),
             ),
             surface_bbox=Pipeline(
                 SelectSurface("template"),
                 SurfaceBoundingBox(),
                 unpack_inputs=False,
+                skip_on_InputSelectorError=True,
             ),
             out_center=Pipeline(
                 ServeValue(self.config.out_center_str),
@@ -187,7 +203,7 @@ class PredictionBuilder(SynthBuilder):
             ),
         )
 
-    def build_spatial_transforms(self):
+    def build_spatial_transforms(self, *args, **kwargs):
         self.image_crop = SubPipeline(
             PipelineModule(
                 SpatialCrop,
@@ -218,7 +234,7 @@ class PredictionBuilder(SynthBuilder):
             ),
         )
 
-    def build_intensity_transforms(self):
+    def build_intensity_transforms(self, *args, **kwargs):
         self.intensity_normalization = IntensityNormalization()
 
     def build_resolution_transforms(self):
@@ -227,12 +243,10 @@ class PredictionBuilder(SynthBuilder):
     def build_output(self):
         return OutputPipelines(
             image=Pipeline(
-                SelectImage("image"),
-                self.image_crop,
-                self.intensity_normalization,
+                SelectState("image"), self.image_crop, self.intensity_normalization
             ),
-            affine=Pipeline(SelectAffine("image"), self.affine_adjuster),
-            surface=Pipeline(
+            affine=Pipeline(SelectState("affine"), self.affine_adjuster),
+            surfaces=Pipeline(
                 SelectSurface(),
                 self.surface_translation,
                 skip_on_InputSelectorError=True,
@@ -543,7 +557,7 @@ class DefaultSynth(SynthBuilder):
             # ),
             affine=self.build_affine(),
             images=self.build_images(),
-            surface=self.build_surface(),
+            surfaces=self.build_surface(),
         )
 
 
@@ -611,7 +625,7 @@ class OnlySelect(OnlySynth):
 
     def build_images(self):
         # return {}
-        return dict(
+        return Pipelines(
             brain_dist_map=Pipeline(
                 SelectImage("brain_dist_map"),
                 self.image_deformation,
@@ -625,7 +639,7 @@ class OnlySelect(OnlySynth):
                 skip_on_InputSelectorError=True,
             ),
             t2w=Pipeline(
-                SelectImage("t1w"),
+                SelectImage("t2w"),
                 self.extracerebral_augmentation,
                 self.image_deformation,
                 self.intensity_normalization,
@@ -633,15 +647,26 @@ class OnlySelect(OnlySynth):
             ),
         )
 
+    # def build_output(self):
+    #     return OutputPipelines(
+    #         image_hires=self.build_image(),
+    #         image=Pipeline(
+    #             SelectOutput("image_hires"),
+    #             self.resolution_augmentation,
+    #         ),
+    #         **self.build_images(),
+    #         **self.build_surfaces(),
+    #     )
     def build_output(self):
         return OutputPipelines(
-            image_hires=self.build_image(),
-            image=Pipeline(
-                SelectOutput("image_hires"),
-                self.resolution_augmentation,
-            ),
-            **self.build_images(),
-            **self.build_surfaces(),
+            image=self.build_image(),
+            # image=Pipeline(
+            #     SelectOutput("image_hires"),
+            #     self.resolution_augmentation,
+            # ),
+            affine=self.build_affine(),
+            images=self.build_images(),
+            surfaces=self.build_surface(),
         )
 
 
@@ -858,7 +883,7 @@ class CropSynth(SynthBuilder):
         )
 
     def build_images(self):
-        return dict(
+        return Pipelines(
             t1w=Pipeline(
                 SelectImage("t1w"),
                 self.extracerebral_augmentation,
@@ -871,10 +896,10 @@ class CropSynth(SynthBuilder):
     def build_output(self):
         return OutputPipelines(
             image=self.build_image(),
-            **self.build_images(),
             affine=Pipeline(
                 SelectAffine(self.config.generation_image), self.affine_adjuster
             ),
+            # images=self.build_images(),
         )
 
 
@@ -909,7 +934,6 @@ class CropSelect(CropSynth):
     def build_output(self):
         return OutputPipelines(
             image=self.build_image(),
-            **self.build_images(),
             affine=Pipeline(
                 PipelineModule(
                     SelectAffine,
@@ -917,6 +941,7 @@ class CropSelect(CropSynth):
                 ),
                 self.affine_adjuster,
             ),
+            # images=self.build_images(),
         )
 
 
@@ -1227,7 +1252,7 @@ class XSubSynth(DefaultSynth):
             ),
             # Synthesize image or select an actual image
             image=self.build_image(),
-            surface=Pipeline(
+            surfaces=Pipeline(
                 SelectSurface(),
                 self.surface_deformation,
                 skip_on_InputSelectorError=True,

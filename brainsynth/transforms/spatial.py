@@ -6,8 +6,8 @@ import torch
 from brainsynth.transforms.base import BaseTransform, RandomizableTransform
 from brainsynth.transforms import resolution_sampler
 from brainsynth.transforms.filters import GaussianSmooth
+from brainsynth.transforms.utils import channel_last, recursive_method
 
-from brainsynth.transforms.utilities import channel_last, method_recursion_dict
 
 class SpatialCropParameters(BaseTransform):
     def __init__(
@@ -71,7 +71,7 @@ class AdjustAffineToSpatialCrop(BaseTransform):
 
     def forward(self, affine: torch.Tensor):
         out = affine.clone()
-        out[:3,3] += out[:3,:3] @ self.offset
+        out[:3, 3] += out[:3, :3] @ self.offset
         return out
 
 
@@ -306,7 +306,6 @@ class RandLinearTransform(RandomizableTransform):
                 return grid @ A.T
         else:
             return grid
-
 
 
 class ScaleAndSquare(BaseTransform):
@@ -1014,18 +1013,18 @@ class SurfaceBoundingBox(BaseTransform):
         self.pad = pad
         self.reduce = reduce
 
-    @method_recursion_dict
+    @recursive_method
     def compute_bbox(self, x: torch.Tensor):
         """Bounding box of 2D array with (points, coordinates)."""
         return torch.stack((x.amin(0), x.amax(0)))
 
-    @method_recursion_dict
+    @recursive_method
     def _floor_and_ceil(self, bbox: torch.Tensor):
         torch.floor(bbox[0], out=bbox[0])
         torch.ceil(bbox[1], out=bbox[1])
         return bbox
 
-    @method_recursion_dict
+    @recursive_method
     def _pad(self, bbox: torch.Tensor):
         bbox[0] -= self.pad
         bbox[1] += self.pad
@@ -1088,6 +1087,8 @@ class CenterFromString(BaseTransform):
 
     def forward(self, center):
         if self.valid_centers is not None:
+            print(center)
+            print(self.valid_centers)
             assert center in self.valid_centers
 
         match center:
@@ -1149,7 +1150,8 @@ class RandResolution(RandomizableTransform):
                 )
             else:
                 out_res, thickness = getattr(resolution_sampler, res_sampler)(
-                    **res_sampler_kwargs, device=self.device,
+                    **res_sampler_kwargs,
+                    device=self.device,
                 )()
 
             sigma = (
@@ -1175,7 +1177,7 @@ class RandResolution(RandomizableTransform):
         sv = tuple(
             torch.arange(s, dtype=torch.float, device=self.device) for s in ds_size
         )
-        ds_factor = self.out_size/ds_size
+        ds_factor = self.out_size / ds_size
 
         small_voxel = torch.stack(torch.meshgrid(*sv, indexing="ij"))
         out_voxel = self.resize(small_voxel)
