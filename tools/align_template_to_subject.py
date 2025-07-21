@@ -32,6 +32,7 @@ def write_resolutions(v, resolutions, name):
 
 def align_template_to_subjects(DATASET_DIR, datasets=None):
     DATASET_DIR = Path(DATASET_DIR)
+    ds_dir = DATASET_DIR
 
     resolutions = [0]
     top0 = DeepSurferTopology()
@@ -40,29 +41,27 @@ def align_template_to_subjects(DATASET_DIR, datasets=None):
         rh=load_cortical_template("rh", "white")["vertices"],
     )
 
-    for ds_dir in sorted(DATASET_DIR.glob("*")):
-        if ds_dir.name != "ADNI-GO2":
-            continue
-        print(ds_dir.name)
-        for sub_dir in tqdm(sorted(ds_dir.glob("sub-*"))):
-            filename_t1w = sub_dir / "T1w.nii"
-            t1 = nib.load(filename_t1w)
-            ras2vox = np.linalg.inv(t1.affine)
-            mni2ras = torch.load(sub_dir / "mni305-to-ras.brain.pt").numpy()
-            FREESURFER_VOLUME_INFO["volume"] = t1.shape
-            FREESURFER_VOLUME_INFO["filename"] = str(filename_t1w)
-            for hemi in ("lh", "rh"):
-                v = apply_affine(mni2ras, template[hemi])
-                nib.freesurfer.write_geometry(
-                    sub_dir / f"{hemi}.template",
-                    v[: top0.n_vertices],
-                    top0.faces.numpy(),
-                    volume_info=FREESURFER_VOLUME_INFO,
-                )
-                v = apply_affine(ras2vox, v)
-                write_resolutions(
-                    v, resolutions, sub_dir / f"{hemi}.template.{{res}}.pt"
-                )
+    # for ds_dir in sorted(DATASET_DIR.glob("*")):
+    #     if ds_dir.name != "ADNI-GO2":
+    #         continue
+    #     print(ds_dir.name)
+    for sub_dir in tqdm(sorted(ds_dir.glob("sub-*"))):
+        filename_t1w = sub_dir / "T1w.nii"
+        t1 = nib.load(filename_t1w)
+        ras2vox = np.linalg.inv(t1.affine)
+        mni2ras = torch.load(sub_dir / "mni305-to-ras.brain.pt").numpy()
+        FREESURFER_VOLUME_INFO["volume"] = t1.shape
+        FREESURFER_VOLUME_INFO["filename"] = str(filename_t1w)
+        for hemi in ("lh", "rh"):
+            v = apply_affine(mni2ras, template[hemi])
+            nib.freesurfer.write_geometry(
+                sub_dir / f"{hemi}.template",
+                v[: top0.n_vertices],
+                top0.faces.numpy(),
+                volume_info=FREESURFER_VOLUME_INFO,
+            )
+            v = apply_affine(ras2vox, v)
+            write_resolutions(v, resolutions, sub_dir / f"{hemi}.template.{{res}}.pt")
 
 
 if __name__ == "__main__":

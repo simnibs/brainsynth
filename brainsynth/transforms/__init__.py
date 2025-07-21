@@ -227,11 +227,7 @@ class PipelineModule:
         self.args = args or []
         self.kwargs = kwargs or {}
 
-    def check_input(
-        self,
-        mapped_inputs: dict,
-        inp,
-    ):
+    def check_input(self, mapped_inputs: dict, inp):
         if isinstance(inp, InputSelector):
             # When an InputSelector is used as (kw)arg, evaluate
             inp = inp(mapped_inputs)
@@ -248,9 +244,7 @@ class PipelineModule:
 
         return inp
 
-    def check_transform(
-        self,
-    ):
+    def check_transform(self):
         assert issubclass(self.transform, torch.nn.Module)
 
     def __call__(self, mapped_inputs: dict[str, dict[str, torch.Tensor]]):

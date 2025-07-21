@@ -430,14 +430,12 @@ class DefaultSynth(SynthBuilder):
             self.config.in_res,
             resolution_sampler,
             resolution_sampler_kw,
-            # res_sampler="RandClinicalSlice",
-            # res_sampler_kwargs=dict(slice_idx=2),
             photo_mode=self.config.photo_mode,
             photo_res_sampler_kwargs=dict(
                 spacing=SelectState("photo_spacing"),
                 slice_thickness=self.config.photo_thickness,
             ),
-            prob=1.0,
+            prob=0.75,  # 0.75
             device=self.device,
         )
 
@@ -580,11 +578,6 @@ class OnlySynth(DefaultSynth):
         self.inv_nonlinear_transform = IdentityTransform()
 
 
-class OnlySynthIso(OnlySynth):
-    def build_resolution_transforms(self):
-        self.resolution_augmentation = IdentityTransform()
-
-
 class OnlySelect(OnlySynth):
     """This pipeline includes
 
@@ -619,7 +612,7 @@ class OnlySelect(OnlySynth):
             ),
             self.extracerebral_augmentation,
             self.image_deformation,  # Transform to output FOV
-            # self.resolution_augmentation,
+            self.resolution_augmentation,
             self.intensity_normalization,
         )
 
@@ -668,6 +661,11 @@ class OnlySelect(OnlySynth):
             images=self.build_images(),
             surfaces=self.build_surface(),
         )
+
+
+class OnlySynthIso(OnlySynth):
+    def build_resolution_transforms(self):
+        self.resolution_augmentation = IdentityTransform()
 
 
 class OnlySelectIso(OnlySelect):

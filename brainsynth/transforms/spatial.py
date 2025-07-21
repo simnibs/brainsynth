@@ -1087,8 +1087,6 @@ class CenterFromString(BaseTransform):
 
     def forward(self, center):
         if self.valid_centers is not None:
-            print(center)
-            print(self.valid_centers)
             assert center in self.valid_centers
 
         match center:

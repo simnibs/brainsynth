@@ -60,25 +60,25 @@ def estimate_affine_brain(template, target):
 
 def estimate_affines(DATASET_DIR):
     DATASET_DIR = Path(DATASET_DIR)
+    ds_dir = DATASET_DIR
 
     template = {
         h: read_surface_as_ras(resources_dir / f"{h}.white") for h in HEMISPHERES
     }
 
-    for ds_dir in sorted(DATASET_DIR.glob("*")):
-        print(ds_dir.name)
-        for sub_dir in tqdm(sorted(ds_dir.glob("sub-*"))):
-            target = {
-                h: read_surface_as_ras(sub_dir / f"{h}.white.resample")
-                for h in HEMISPHERES
-            }
+    # for ds_dir in sorted(DATASET_DIR.glob("*")):
+    #     print(ds_dir.name)
+    for sub_dir in tqdm(sorted(ds_dir.glob("sub-*"))):
+        target = {
+            h: read_surface_as_ras(sub_dir / f"{h}.white.resample") for h in HEMISPHERES
+        }
 
-            affine = estimate_affine_hemis(template, target)
-            for k, v in affine.items():
-                torch.save(v, sub_dir / f"mni305-to-ras.{k}.pt")
+        affine = estimate_affine_hemis(template, target)
+        for k, v in affine.items():
+            torch.save(v, sub_dir / f"mni305-to-ras.{k}.pt")
 
-            affine_brain = estimate_affine_brain(template, target)
-            torch.save(affine_brain, sub_dir / "mni305-to-ras.brain.pt")
+        affine_brain = estimate_affine_brain(template, target)
+        torch.save(affine_brain, sub_dir / "mni305-to-ras.brain.pt")
 
 
 if __name__ == "__main__":
