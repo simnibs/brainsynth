@@ -512,9 +512,6 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.conform = conform
         self.mni_transform_loader = mni_transform_loader
 
-        self.template = {}
-        # self.template_meta = {}
-
         self.template = {
             h: brainsynth.resources.load_cortical_template(h, "white")["vertices"][
                 :nv_template
@@ -555,15 +552,15 @@ class PredictionDataset(torch.utils.data.Dataset):
 
         self.preprocess_mni_transform = preprocess_mni_transform
 
-    def prepare_initial_vertices(self, trans, vox2mri):
+    def prepare_template(self, trans, vox2mri):
         trans = torch.linalg.inv(vox2mri) @ trans
         return {k: apply_affine(trans, v) for k, v in self.template.items()}
 
-    def get_initial_vertices(self, index, vox2mri):
+    def get_template(self, index, vox2mri):
         trans = self.mni_transform_loader(self.mni_transform[index])
         trans = torch.tensor(trans, dtype=torch.float)
         trans = self.preprocess_mni_transform(trans)
-        return self.prepare_initial_vertices(trans, vox2mri)
+        return self.prepare_template(trans, vox2mri)
 
     def preprocess_image(self, img):
         # Apply conform if the linear part of the affine deviates identity,
@@ -582,8 +579,8 @@ class PredictionDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         image, vox2mri = self.load_image(index)
-        template = self.get_initial_vertices(index, vox2mri)
-        return image, template, vox2mri
+        template = self.get_template(index, vox2mri)
+        return image, vox2mri, template
 
 
 class AlignmentDataset(SynthesizedDataset):
