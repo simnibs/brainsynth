@@ -68,7 +68,7 @@ class DatasetConfig:
         self,
         root_dir: Path | str,
         subject_dir: Path | str,
-        subject_subset: None | str,
+        subject_subset: None | str = None,
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
         exclude_subjects: None | str = None,

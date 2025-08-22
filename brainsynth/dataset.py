@@ -21,7 +21,8 @@ def load_dataset_subjects(filename):
 def _load_image(
     image: nib.Nifti1Image | Path | str,
     dtype,
-    transform: Callable | None = None,
+    image_transform: Callable = lambda x: x,
+    data_transform: Callable = lambda x: x,
     return_affine: bool = False,
 ):
     # Images seem to be (x,y,z,c) or (x,y,z) but we want (c,x,y,z)
@@ -29,8 +30,8 @@ def _load_image(
         img = image
     else:
         img = nib.load(image)
-    data = torch.tensor(img.dataobj[:])
-    data = data if transform is None else transform(data)
+    img = image_transform(img)
+    data = data_transform(torch.tensor(img.dataobj[:]))
     data = data.to(dtype=dtype)
 
     if data.ndim < 3:
@@ -277,10 +278,12 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             if (fi := self.get_image_filename(subject, img.filename)).exists():
                 if self.return_affine:
                     images[image], affines[image] = _load_image(
-                        fi, img.dtype, img.transform, return_affine=True
+                        fi, img.dtype, data_transform=img.transform, return_affine=True
                     )
                 else:
-                    images[image] = _load_image(fi, img.dtype, img.transform)
+                    images[image] = _load_image(
+                        fi, img.dtype, data_transform=img.transform
+                    )
                 # If the image has an associated defacing mask, load it
                 if self.load_mask is not False and img.defacingmask is not None:
                     mask = getattr(IMAGE.images, img.defacingmask)
@@ -417,7 +420,7 @@ class XDataset(torch.utils.data.Dataset):
         for image in self.images:
             img = getattr(IMAGE.images, image)
             fi = self.get_image_filename(subject, img.filename)
-            images[image] = _load_image(fi, img.dtype, img.transform)
+            images[image] = _load_image(fi, img.dtype, data_transform=img.transform)
         return images
 
 

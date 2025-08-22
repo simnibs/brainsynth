@@ -1080,10 +1080,7 @@ class CenterFromString(BaseTransform):
         self.size = size
         self.surface_bbox = surface_bbox
         self.align_corners = align_corners
-        if self.surface_bbox is None:
-            self.valid_centers = {"image", "random"}
-        else:
-            self.valid_centers = None
+        self.valid_centers = {"image", "random"} if surface_bbox is None else None
 
     def forward(self, center):
         if self.valid_centers is not None:
