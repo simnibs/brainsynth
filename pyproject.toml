@@ -1,10 +1,8 @@
 [project]
 name = "BrainSynth"
-version = "0.1a"
+version = "0.1"
 description = "Tool for generating synthetic images of the brain and head from segmentations."
-maintainers = [
-    {name = "Jesper Duemose Nielsen"}
-]
+maintainers = [{ name = "Jesper Duemose Nielsen" }]
 requires-python = ">=3.11"
 dependencies = [
     "nibabel >= 5.1",
@@ -18,16 +16,16 @@ requires = ["setuptools>=69.2", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
-generate = [
-    "scikit-learn >= 1.3",
-    "surfa >= 0.6",
-]
+generate = ["scikit-learn >= 1.3", "surfa >= 0.6"]
 
 [tool.setuptools.package-data]
 brainsynth = [
-    "resources/lh.white.smooth",
-    "resources/rh.white.smooth",
-    "resources/cortex-int-lh.srf",
+    "resources/template/surf/lh.white",
+    "resources/template/surf/lh.sphere.reg",
+    "resources/template/surf/rh.white",
+    "resources/template/surf/rh.sphere.reg",
+    # "resources/template/label/*"
+    # "resources/template/surf/*"
     "constants/lut/brainseg.lut",
     "constants/lut/brainseg_with_extracerebral.lut",
 ]
