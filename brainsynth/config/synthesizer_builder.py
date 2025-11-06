@@ -446,8 +446,10 @@ class DefaultSynth(SynthBuilder):
             SynthesizeIntensityImage(
                 mu_low=25.0,
                 mu_high=200.0,
-                sigma_global_scale=4.0,
-                sigma_local_scale=2.5,
+                # sigma_global_scale=4.0,
+                # sigma_local_scale=2.5,
+                sigma_global_scale=6.0,  # 0.5 mm
+                sigma_local_scale=5.0,  # 0.5 mm
                 pv_sigma_range=[0.5, 1.2],
                 pv_tail_length=3.0,
                 pv_from_distances=False,
@@ -461,9 +463,9 @@ class DefaultSynth(SynthBuilder):
             RandBiasfield(
                 self.config.out_size,
                 scale_min=0.01,
-                scale_max=0.03,
-                std_min=0.0,
-                std_max=0.3,
+                scale_max=0.04,
+                # std=0.3, # 3T
+                std=0.6,  # 7T
                 photo_mode=self.config.photo_mode,
                 prob=0.75,
                 device=self.device,
@@ -473,8 +475,7 @@ class DefaultSynth(SynthBuilder):
             #     self.config.out_size,
             #     scale_min=0.10,
             #     scale_max=0.20,
-            #     std_min=0.0,
-            #     std_max=0.15,
+            #     std=0.15,
             #     photo_mode=self.config.photo_mode,
             #     prob=0.5,
             #     device=self.device,
@@ -710,8 +711,7 @@ class OnlySynthIsoT1w(OnlySynthIso):
             #     self.config.out_size,
             #     scale_min=0.01,
             #     scale_max=0.03,
-            #     std_min=0.0,
-            #     std_max=0.3,
+            #     std=0.3,
             #     photo_mode=self.config.photo_mode,
             #     prob=0.75,
             #     device=self.device,
@@ -859,8 +859,7 @@ class CropSynth(SynthBuilder):
                 self.config.out_size,
                 scale_min=0.01,
                 scale_max=0.03,
-                std_min=0.0,
-                std_max=0.3,
+                std=0.3,
                 photo_mode=self.config.photo_mode,
                 prob=0.75,
                 device=self.device,
@@ -870,8 +869,7 @@ class CropSynth(SynthBuilder):
             #     self.config.out_size,
             #     scale_min=0.10,
             #     scale_max=0.20,
-            #     std_min=0.0,
-            #     std_max=0.15,
+            #     std=0.15,
             #     photo_mode=self.config.photo_mode,
             #     prob=0.5,
             #     device=self.device,
@@ -1014,8 +1012,7 @@ class SynthOrSelectImage(DefaultSynth):
             #     self.config.out_size,
             #     scale_min=0.02,
             #     scale_max=0.04,
-            #     std_min=0.1,
-            #     std_max=0.6,
+            #     std=0.6,
             #     photo_mode=self.config.photo_mode,
             #     prob=0.9,
             #     device=self.device,
@@ -1025,312 +1022,113 @@ class SynthOrSelectImage(DefaultSynth):
         )
 
 
-class XSubSynth(DefaultSynth):
-    def __init__(self, config: SynthesizerConfig) -> None:
-        super().__init__(config)
-
-    def initialize_spatial_transforms(self):
-        self.warp_surface = SubPipeline(
-            PipelineModule(
-                XSubWarpSurface_v2,  # or XSubWarpSurface_v1
-                # SelectState("self_mni_backward_cropped"),
-                SelectImage("mni152_nonlin_backward"),
-                SelectImage("other:mni152_nonlin_forward"),
-            ),
-        )
-
-    def build_spatial_transforms(self):
-        self.image_deformation = SubPipeline(
-            PipelineModule(
-                XSubWarpImage,
-                SelectImage("mni152_nonlin_forward"),
-                SelectState("other_mni_backward_cropped"),
-                SelectState("self_size"),  # size of the input we sample *from*
-            ),
-            # We used a cropped image in `other` space so pad to achieve
-            # desired output size
-            PipelineModule(
-                PadTransform,
-                SelectState("crop_params", "pad"),
-            ),
-        )
-
-        self.surface_deformation = SubPipeline(
-            # compensate for offset caused by cropping in self space
-            # PipelineModule(
-            #     TranslationTransform,
-            #     SelectState("padded_surface_bbox", 0),  # lower left
-            #     invert=True,
-            #     device=device,
-            # ),
-            # PipelineModule(
-            #     XSubWarpSurface_v1,
-            #     SelectState("self_mni_backward_cropped"),
-            #     SelectImage("other:mni152_nonlin_forward"),
-            # ),
-            self.warp_surface,
-            # compensate for offset caused by cropping in other space (because
-            # we cropped to out_size)
-            PipelineModule(
-                TranslationTransform,
-                SelectState("crop_params", "offset"),
-                invert=True,
-                device=self.device,
-            ),
-            CheckCoordsInside(self.config.out_size, device=self.device),
-        )
-
-    def build_state(self):
-        return StatePipelines(
-            # spacing of photos (slices)
-            photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
-            # available images
-            available_images=Pipeline(
-                SelectImage(),
-                ExtractDictKeys(),
-                unpack_inputs=False,
-            ),
-            selectable_images=Pipeline(
-                SelectState("available_images"),
-                Intersection(self.config.selectable_images),
-                unpack_inputs=False,
-            ),
-            # the size of the input image(s)
-            # (this should be an image that is always available)
-            self_size=Pipeline(
-                PipelineModule(
-                    SelectImage,
-                    SelectState("available_images", 0),
-                ),
-                SpatialSize(),
-            ),
-            # the spatial dimensions of the image to warp *to*
-            other_size=Pipeline(
-                SelectImage("other:mni152_nonlin_backward"),
-                SpatialSize(),
-            ),
-            surface_bbox=Pipeline(
-                SelectInitialVertices(),
-                SurfaceBoundingBox(),
-                unpack_inputs=False,
-            ),
-            # padded_surface_bbox=Pipeline(
-            #     SelectInitialVertices(),
-            #     # pad so hopefully the pial surface is inside...
-            #     SurfaceBoundingBox(floor_and_ceil=True, pad=20.0, reduce=True),
-            #     PipelineModule(
-            #         RestrictBoundingBox,
-            #         SelectState("self_size"),
-            #         device=device,
-            #     ),
-            #     unpack_inputs=False,
-            # ),
-            # where to center the (output) FOV in the input image space
-            self_out_center=Pipeline(
-                ServeValue(self.config.out_center_str),
-                PipelineModule(
-                    CenterFromString,
-                    SelectState("self_size"),
-                    SelectState("surface_bbox"),
-                    align_corners=self.config.align_corners,
-                ),
-                # RandTranslationTransform(
-                #     x_range=[-10, 10],
-                #     y_range=[-10, 10],
-                #     z_range=[-10, 10],
-                #     prob=0.5,
-                #     device=self.device,
-                # ),
-            ),
-            # transform center to `other`
-            other_out_center=Pipeline(
-                SelectState("self_out_center"),
-                ApplyFunction(torch.atleast_2d),
-                self.warp_surface,
-                ApplyFunction(torch.squeeze),
-            ),
-            # other_out_center=Pipeline(
-            #     ServeValue(config.out_center_str),
-            #     PipelineModule(
-            #         CenterFromString,
-            #         SelectState("other_size"),
-            #         align_corners=config.align_corners,
-            #     ),
-            # ),
-            # cropping parameters in `other` space
-            crop_params=Pipeline(
-                SelectState("other_size"),
-                PipelineModule(
-                    SpatialCropParameters,
-                    self.config.out_size,
-                    SelectState("other_out_center"),
-                ),
-            ),
-            # we don't need the entire space of `self` in order to transform
-            # the surface so crop to a bounding box around the surface(s)
-            # self_mni_backward_cropped=Pipeline(
-            #     SelectImage("mni152_nonlin_backward"),
-            #     PipelineModule(
-            #         SpatialCrop,
-            #         size=SelectState("self_size"),
-            #         start=SelectState("padded_surface_bbox", 0),  # recursive selection
-            #         stop=SelectState("padded_surface_bbox", 1),
-            #     ),
-            # ),
-            # depending on the desired output FOV, we don't need to fill the
-            # entire space of `other` so crop it
-            other_mni_backward_cropped=Pipeline(
-                SelectImage("other:mni152_nonlin_backward"),
-                PipelineModule(
-                    SpatialCrop,
-                    size=SelectState("other_size"),
-                    slices=SelectState("crop_params", "slices"),
-                ),
-            ),
-        )
-
-    def build_image(self):
-        """No intensity augmentation."""
-
-        return Pipeline(
-            # Select one of the available (valid) images
-            PipelineModule(
-                SelectImage,
-                PipelineModule(
-                    RandomChoice,
-                    # equal probability of selecting each image
-                    SelectState("selectable_images"),
-                ),
-            ),
-            self.image_deformation,  # Transform to output FOV
-            # RandBiasfield(
-            #     self.config.out_size,
-            #     scale_min=0.02,
-            #     scale_max=0.04,
-            #     std_min=0.1,
-            #     std_max=0.6,
-            #     photo_mode=self.config.photo_mode,
-            #     prob=0.9,
-            #     device=self.device,
-            # ),
-            self.resolution_augmentation,
-            self.intensity_normalization,
-        )
-
-    def build_output(self):
-        return OutputPipelines(
-            t1w=Pipeline(
-                SelectImage("t1w"),
-                self.image_deformation,
-                self.intensity_normalization,
-                # This pipeline is allowed to fail if the input is not found
-                skip_on_InputSelectorError=True,
-            ),
-            t1w_mask=Pipeline(
-                SelectImage("t1w_mask"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
-            t2w=Pipeline(
-                SelectImage("t2w"),
-                self.image_deformation,
-                self.intensity_normalization,
-                skip_on_InputSelectorError=True,
-            ),
-            t2w_mask=Pipeline(
-                SelectImage("t2w_mask"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
-            brainseg=Pipeline(
-                SelectImage("brainseg"),
-                self.image_deformation,
-                OneHotEncoding(self.config.segmentation_num_labels),
-                skip_on_InputSelectorError=True,
-            ),
-            # Synthesize image or select an actual image
-            image=self.build_image(),
-            surfaces=Pipeline(
-                SelectSurface(),
-                self.surface_deformation,
-                skip_on_InputSelectorError=True,
-            ),
-            initial_vertices=Pipeline(
-                SelectInitialVertices(),
-                self.surface_deformation,
-                # Noise on initial vertices
-                RandLinearTransform(
-                    max_rotation=5.0,
-                    max_scale=0.05,
-                    max_shear=0.05,
-                    relative_to_input=True,
-                    prob=0.5,
-                    device=self.device,
-                ),
-                RandTranslationTransform(
-                    x_range=[-3, 3],
-                    y_range=[-3, 3],
-                    z_range=[-3, 3],
-                    prob=0.5,
-                    device=self.device,
-                ),
-                skip_on_InputSelectorError=True,
-            ),
-        )
-
-
-class XSubSynthIso(XSubSynth):
-    def resolution_augmentation(self):
-        return IdentityTransform()
-
-
-# class SaverioSynth(SynthBuilder):
+# class XSubSynth(DefaultSynth):
 #     def __init__(self, config: SynthesizerConfig) -> None:
 #         super().__init__(config)
 
 #     def initialize_spatial_transforms(self):
-#         self.nonlinear_transform = RandNonlinearTransform(
-#             self.config.out_size,
-#             scale_min=0.03,  # 0.10,
-#             scale_max=0.06,  # 0.15,
-#             std_max=4.0,
-#             exponentiate_field=True,
-#             grid=self.config.grid,
-#             prob=1.0,
-#             device=self.device,
+#         self.warp_surface = SubPipeline(
+#             PipelineModule(
+#                 XSubWarpSurface_v2,  # or XSubWarpSurface_v1
+#                 # SelectState("self_mni_backward_cropped"),
+#                 SelectImage("mni152_nonlin_backward"),
+#                 SelectImage("other:mni152_nonlin_forward"),
+#             ),
 #         )
-#         self.linear_transform = RandLinearTransform(
-#             max_rotation=15.0,
-#             max_scale=0.2,
-#             max_shear=0.2,
-#             prob=1.0,
-#             device=self.device,
+
+#     def build_spatial_transforms(self):
+#         self.image_deformation = SubPipeline(
+#             PipelineModule(
+#                 XSubWarpImage,
+#                 SelectImage("mni152_nonlin_forward"),
+#                 SelectState("other_mni_backward_cropped"),
+#                 SelectState("self_size"),  # size of the input we sample *from*
+#             ),
+#             # We used a cropped image in `other` space so pad to achieve
+#             # desired output size
+#             PipelineModule(
+#                 PadTransform,
+#                 SelectState("crop_params", "pad"),
+#             ),
+#         )
+
+#         self.surface_deformation = SubPipeline(
+#             # compensate for offset caused by cropping in self space
+#             # PipelineModule(
+#             #     TranslationTransform,
+#             #     SelectState("padded_surface_bbox", 0),  # lower left
+#             #     invert=True,
+#             #     device=device,
+#             # ),
+#             # PipelineModule(
+#             #     XSubWarpSurface_v1,
+#             #     SelectState("self_mni_backward_cropped"),
+#             #     SelectImage("other:mni152_nonlin_forward"),
+#             # ),
+#             self.warp_surface,
+#             # compensate for offset caused by cropping in other space (because
+#             # we cropped to out_size)
+#             PipelineModule(
+#                 TranslationTransform,
+#                 SelectState("crop_params", "offset"),
+#                 invert=True,
+#                 device=self.device,
+#             ),
+#             CheckCoordsInside(self.config.out_size, device=self.device),
 #         )
 
 #     def build_state(self):
-#         return dict(
+#         return StatePipelines(
+#             # spacing of photos (slices)
+#             photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
 #             # available images
 #             available_images=Pipeline(
 #                 SelectImage(),
 #                 ExtractDictKeys(),
 #                 unpack_inputs=False,
 #             ),
+#             selectable_images=Pipeline(
+#                 SelectState("available_images"),
+#                 Intersection(self.config.selectable_images),
+#                 unpack_inputs=False,
+#             ),
 #             # the size of the input image(s)
 #             # (this should be an image that is always available)
-#             in_size=Pipeline(
+#             self_size=Pipeline(
 #                 PipelineModule(
 #                     SelectImage,
-#                     # doesn't matter which is selected - all should be the same size!
 #                     SelectState("available_images", 0),
 #                 ),
 #                 SpatialSize(),
 #             ),
+#             # the spatial dimensions of the image to warp *to*
+#             other_size=Pipeline(
+#                 SelectImage("other:mni152_nonlin_backward"),
+#                 SpatialSize(),
+#             ),
+#             surface_bbox=Pipeline(
+#                 SelectInitialVertices(),
+#                 SurfaceBoundingBox(),
+#                 unpack_inputs=False,
+#             ),
+#             # padded_surface_bbox=Pipeline(
+#             #     SelectInitialVertices(),
+#             #     # pad so hopefully the pial surface is inside...
+#             #     SurfaceBoundingBox(floor_and_ceil=True, pad=20.0, reduce=True),
+#             #     PipelineModule(
+#             #         RestrictBoundingBox,
+#             #         SelectState("self_size"),
+#             #         device=device,
+#             #     ),
+#             #     unpack_inputs=False,
+#             # ),
 #             # where to center the (output) FOV in the input image space
-#             out_center=Pipeline(
+#             self_out_center=Pipeline(
 #                 ServeValue(self.config.out_center_str),
 #                 PipelineModule(
 #                     CenterFromString,
-#                     SelectState("in_size"),
+#                     SelectState("self_size"),
+#                     SelectState("surface_bbox"),
 #                     align_corners=self.config.align_corners,
 #                 ),
 #                 # RandTranslationTransform(
@@ -1341,86 +1139,82 @@ class XSubSynthIso(XSubSynth):
 #                 #     device=self.device,
 #                 # ),
 #             ),
-#             # the deformed grid
-#             resampling_grid=Pipeline(
-#                 ServeValue(self.config.centered_grid),
-#                 self.nonlinear_transform,
-#                 self.linear_transform,
+#             # transform center to `other`
+#             other_out_center=Pipeline(
+#                 SelectState("self_out_center"),
+#                 ApplyFunction(torch.atleast_2d),
+#                 self.warp_surface,
+#                 ApplyFunction(torch.squeeze),
+#             ),
+#             # other_out_center=Pipeline(
+#             #     ServeValue(config.out_center_str),
+#             #     PipelineModule(
+#             #         CenterFromString,
+#             #         SelectState("other_size"),
+#             #         align_corners=config.align_corners,
+#             #     ),
+#             # ),
+#             # cropping parameters in `other` space
+#             crop_params=Pipeline(
+#                 SelectState("other_size"),
 #                 PipelineModule(
-#                     TranslationTransform,
-#                     SelectState("out_center"),
-#                     device=self.device,
+#                     SpatialCropParameters,
+#                     self.config.out_size,
+#                     SelectState("other_out_center"),
+#                 ),
+#             ),
+#             # we don't need the entire space of `self` in order to transform
+#             # the surface so crop to a bounding box around the surface(s)
+#             # self_mni_backward_cropped=Pipeline(
+#             #     SelectImage("mni152_nonlin_backward"),
+#             #     PipelineModule(
+#             #         SpatialCrop,
+#             #         size=SelectState("self_size"),
+#             #         start=SelectState("padded_surface_bbox", 0),  # recursive selection
+#             #         stop=SelectState("padded_surface_bbox", 1),
+#             #     ),
+#             # ),
+#             # depending on the desired output FOV, we don't need to fill the
+#             # entire space of `other` so crop it
+#             other_mni_backward_cropped=Pipeline(
+#                 SelectImage("other:mni152_nonlin_backward"),
+#                 PipelineModule(
+#                     SpatialCrop,
+#                     size=SelectState("other_size"),
+#                     slices=SelectState("crop_params", "slices"),
 #                 ),
 #             ),
 #         )
 
-#     def build_spatial_transforms(self):
-#         self.image_deformation = SubPipeline(
-#             PipelineModule(
-#                 GridSample,
-#                 SelectState("resampling_grid"),
-#                 SelectState("in_size"),
-#             ),
-#         )
-
-#     def build_intensity_transforms(self):
-#         self.intensity_normalization = IntensityNormalization()
-
-#     def build_resolution_transforms(self):
-#         # self.resolution_augmentation = PipelineModule(
-#         #     RandResolution,
-#         #     self.config.out_size,
-#         #     self.config.in_res,
-#         #     prob=0.75,
-#         #     device=self.device,
-#         # )
-#         self.resolution_augmentation = IdentityTransform()
-
 #     def build_image(self):
+#         """No intensity augmentation."""
+
 #         return Pipeline(
-#             # Synthesize image
-#             SelectImage("segmentation"),
-#             SynthesizeIntensityImage(
-#                 mu_low=25.0,
-#                 mu_high=200.0,
-#                 sigma_global_scale=4.0,
-#                 sigma_local_scale=2.5,
-#                 pv_sigma_range=[0.5, 1.2],
-#                 pv_tail_length=3.0,
-#                 pv_from_distances=False,
-#                 min_cortical_contrast=10.0,
-#                 photo_mode=self.config.photo_mode,
-#                 device=self.device,
+#             # Select one of the available (valid) images
+#             PipelineModule(
+#                 SelectImage,
+#                 PipelineModule(
+#                     RandomChoice,
+#                     # equal probability of selecting each image
+#                     SelectState("selectable_images"),
+#                 ),
 #             ),
-#             RandGammaTransform(prob=0.33),
 #             self.image_deformation,  # Transform to output FOV
-#             RandBiasfield(
-#                 self.config.out_size,
-#                 scale_min=0.01,
-#                 scale_max=0.03,
-#                 std_min=0.0,
-#                 std_max=0.3,
-#                 photo_mode=self.config.photo_mode,
-#                 prob=0.75,
-#                 device=self.device,
-#             ),
-#             # Small, local intensity variations
 #             # RandBiasfield(
 #             #     self.config.out_size,
-#             #     scale_min=0.10,
-#             #     scale_max=0.20,
-#             #     std_min=0.0,
-#             #     std_max=0.15,
+#             #     scale_min=0.02,
+#             #     scale_max=0.04,s
+#             #     std=0.6,
 #             #     photo_mode=self.config.photo_mode,
-#             #     prob=0.5,
+#             #     prob=0.9,
 #             #     device=self.device,
 #             # ),
 #             self.resolution_augmentation,
 #             self.intensity_normalization,
 #         )
 
-#     def build_images(self):
-#         return dict(
+#     def build_output(self):
+#         return OutputPipelines(
 #             t1w=Pipeline(
 #                 SelectImage("t1w"),
 #                 self.image_deformation,
@@ -1428,16 +1222,59 @@ class XSubSynthIso(XSubSynth):
 #                 # This pipeline is allowed to fail if the input is not found
 #                 skip_on_InputSelectorError=True,
 #             ),
-#             seg=Pipeline(
-#                 SelectImage("segmentation"),
+#             t1w_mask=Pipeline(
+#                 SelectImage("t1w_mask"),
+#                 self.image_deformation,
+#                 skip_on_InputSelectorError=True,
+#             ),
+#             t2w=Pipeline(
+#                 SelectImage("t2w"),
+#                 self.image_deformation,
+#                 self.intensity_normalization,
+#                 skip_on_InputSelectorError=True,
+#             ),
+#             t2w_mask=Pipeline(
+#                 SelectImage("t2w_mask"),
+#                 self.image_deformation,
+#                 skip_on_InputSelectorError=True,
+#             ),
+#             brainseg=Pipeline(
+#                 SelectImage("brainseg"),
 #                 self.image_deformation,
 #                 OneHotEncoding(self.config.segmentation_num_labels),
 #                 skip_on_InputSelectorError=True,
 #             ),
+#             # Synthesize image or select an actual image
+#             image=self.build_image(),
+#             surfaces=Pipeline(
+#                 SelectSurface(),
+#                 self.surface_deformation,
+#                 skip_on_InputSelectorError=True,
+#             ),
+#             initial_vertices=Pipeline(
+#                 SelectInitialVertices(),
+#                 self.surface_deformation,
+#                 # Noise on initial vertices
+#                 RandLinearTransform(
+#                     max_rotation=5.0,
+#                     max_scale=0.05,
+#                     max_shear=0.05,
+#                     relative_to_input=True,
+#                     prob=0.5,
+#                     device=self.device,
+#                 ),
+#                 RandTranslationTransform(
+#                     x_range=[-3, 3],
+#                     y_range=[-3, 3],
+#                     z_range=[-3, 3],
+#                     prob=0.5,
+#                     device=self.device,
+#                 ),
+#                 skip_on_InputSelectorError=True,
+#             ),
 #         )
 
-#     def build_output(self):
-#         return dict(
-#             image=self.build_image(),
-#             **self.build_images(),
-#         )
+
+# class XSubSynthIso(XSubSynth):
+#     def resolution_augmentation(self):
+#         return IdentityTransform()

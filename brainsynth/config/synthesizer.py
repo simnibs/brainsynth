@@ -8,7 +8,7 @@ class PredictionConfig:
     def __init__(
         self,
         builder: str,
-        # in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
+        in_res: list[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
         out_size: list[int] | tuple[int, int, int] = (192, 192, 192),
         out_center_str: str = "image",
         align_corners: bool = True,
@@ -20,10 +20,10 @@ class PredictionConfig:
         self.device = torch.device(device)
         self.builder = builder
 
-        # assert len(in_res) == 3
-        # self.in_res = torch.tensor(in_res, device=self.device)
+        assert len(in_res) == 3
+        self.in_res = torch.tensor(in_res, device=self.device)
 
-        assert len(out_size) == 3
+        assert len(out_size) == 3, f"Got {out_size}"
         self.out_size = torch.tensor(out_size, device=self.device)
         assert torch.all(self.out_size % 2 == 0), "Output FOV should be divisible by 2."
 
@@ -76,6 +76,7 @@ class SynthesizerConfig(PredictionConfig):
     ):
         super().__init__(
             builder,
+            in_res,
             out_size,
             out_center_str,
             align_corners,
@@ -84,9 +85,6 @@ class SynthesizerConfig(PredictionConfig):
             spatial_transforms_kw,
             device,
         )
-
-        assert len(in_res) == 3
-        self.in_res = torch.tensor(in_res, device=self.device)
 
         if isinstance(segmentation_labels, str):
             segmentation_labels = getattr(IMAGE.labeling_scheme, segmentation_labels)

@@ -63,7 +63,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         ds_structure: str = "tree",
         surfaces: list[dict] | dict | None = {},
         return_affine: bool = True,
-        # randomize_hemisphere: bool = False,
+        load_random_hemisphere: bool = False,
         exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
     ):
@@ -141,7 +141,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         self._initialize_image_settings(images)
         self.return_affine = return_affine
 
-        # self.randomize_hemisphere = randomize_hemisphere
+        self.load_random_hemisphere = load_random_hemisphere
         self._initialize_surface_settings(surfaces)
 
         match synthesizer:
@@ -254,7 +254,9 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
     def load_data(self, subject):
         images, affines = self.load_images(subject)
-        surfaces = self.load_surfaces(subject)
+        # load and convert to voxel space of images
+        ras2vox = torch.linalg.inv(next(iter(affines.values())))
+        surfaces = self.load_surfaces(subject, ras2vox)
 
         if self.xdataset is not None:
             # select a random subject from xdataset
@@ -299,10 +301,17 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
         return images, affines
 
-    def load_surfaces(self, subject):
-        return self._load_surfaces(subject)
+    def load_surfaces(self, subject, affine=None):
+        return self._load_surfaces(subject, affine)
 
-    def _load_surfaces(self, subject):
+    @staticmethod
+    def _apply_affine_to_surface(affine, vertices):
+        if affine is None:
+            return vertices
+        else:
+            return apply_affine(affine, vertices)
+
+    def _load_surfaces(self, subject, affine=None):
         # if self.load_faces:
         #     faces = {h: torch.load(self.get_surface_filename(subject, self.target_faces_files), weights_only=True) for h in hemi}
         # else:
@@ -330,15 +339,35 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         #     for h in hemi
         # }
 
-        return {
-            t: {
-                h: torch.load(
-                    self.get_surface_filename(subject, files), weights_only=True
-                )
-                for h, files in surface.items()
+        if self.load_random_hemisphere:
+            h = str(np.random.choice(("lh", "rh")))
+
+            return {
+                t: {
+                    h: self._apply_affine_to_surface(
+                        affine,
+                        torch.load(
+                            self.get_surface_filename(subject, surface[h]),
+                            weights_only=True,
+                        ),
+                    )
+                }
+                for t, surface in self.surface_files.items()
             }
-            for t, surface in self.surface_files.items()
-        }
+
+        else:
+            return {
+                t: {
+                    h: self._apply_affine_to_surface(
+                        affine,
+                        torch.load(
+                            self.get_surface_filename(subject, files), weights_only=True
+                        ),
+                    )
+                    for h, files in surface.items()
+                }
+                for t, surface in self.surface_files.items()
+            }
 
     # def _load_template_surfaces(self, subject, hemi):
     #     # if (t := self.template_surface_kwargs["types"]) is not None:

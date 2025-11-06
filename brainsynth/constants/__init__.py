@@ -31,6 +31,13 @@ MappedInputKeys = namedtuple(
 mapped_input_keys = MappedInputKeys("images", "affines", "output", "state", "surfaces")
 
 
+# which labels are left, right, or bilateral
+brainseg_lateralization = dict(
+    lh=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 17, 34, 36, 38, 40, 42],
+    rh=[18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 37, 39, 41, 43],
+    bilateral=[11, 12, 13, 16, 31, 32, 33],
+)
+
 # ---------------------------
 # IMAGES
 # ---------------------------
@@ -69,6 +76,8 @@ Images = namedtuple(
         "brainseg",
         "brainseg_with_extracerebral",
         "generation_labels",
+        "generation_labels_upsampled_050",
+        "generation_labels_upsampled_075",
         "generation_labels_dist",
         "mni_reg_x",
         "mni_reg_y",
@@ -97,7 +106,7 @@ Images = namedtuple(
 class ImageData:
     filename: Path | str
     dtype: torch.dtype
-    transform: Callable | None = None
+    transform: Callable = lambda x: x
     defacingmask: None | str = None
 
 
@@ -156,6 +165,12 @@ class ImageSettings:
             flair=ImageData("FLAIR.nii", torch.float, defacingmask="flair_mask"),
             flair_mask=ImageData("FLAIR.defacingmask.nii", torch.float),
             generation_labels=ImageData("generation_labels.nii", torch.int32),
+            generation_labels_upsampled_050=ImageData(
+                "generation_labels_upsampled_050.nii", torch.int32
+            ),
+            generation_labels_upsampled_075=ImageData(
+                "generation_labels_upsampled_075.nii", torch.int32
+            ),
             generation_labels_dist=ImageData("generation_labels_dist.nii", torch.int32),
             lp_dist_map=ImageData("lp_dist_map.nii", torch.float, t_dist_map),
             lw_dist_map=ImageData("lw_dist_map.nii", torch.float, t_dist_map),
@@ -187,6 +202,8 @@ class ImageSettings:
             "brainseg",
             "brainseg_with_extracerebral",
             "generation_labels",
+            "generation_labels_upsampled_050",
+            "generation_labels_upsampled_075",
             "generation_labels_dist",
             "mni_reg_x",
             "mni_reg_y",

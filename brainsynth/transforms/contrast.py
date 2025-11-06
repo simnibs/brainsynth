@@ -6,6 +6,7 @@ from brainsynth.transforms.filters import GaussianSmooth
 
 gl = IMAGE.generation_labels
 
+
 class SynthesizeFromMultivariateNormal(BaseTransform):
     def __init__(
         self,
@@ -15,7 +16,7 @@ class SynthesizeFromMultivariateNormal(BaseTransform):
         sigma_scale_tril: torch.Tensor,
         pv_sigma_range: list[float] = [0.25, 0.5],
         pv_tail_length: float = 2.0,
-        device: None | torch.device = None
+        device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
 
@@ -106,7 +107,9 @@ class SynthesizeIntensityImage(BaseTransform):
             mu[label_slice] = torch.distributions.Uniform(mu_low, mu_high).sample((n,))
 
             sigma = torch.zeros(gl.n_labels)
-            sigma[label_slice] = torch.rand(1) * sigma_offset + sigma_scale * torch.rand(n)
+            sigma[label_slice] = torch.rand(
+                1
+            ) * sigma_offset + sigma_scale * torch.rand(n)
 
             # T1w-like contrast!
 
@@ -149,7 +152,6 @@ class SynthesizeIntensityImage(BaseTransform):
         # mix parameters
 
         if self.pv_from_distances:
-
             frac = torch.linspace(0, 1, 50, device=self.device)
 
             mu[gl.pv.lesion : gl.pv.white] = mu[gl.lesion] + frac * (
@@ -172,19 +174,19 @@ class SynthesizeIntensityImage(BaseTransform):
             )
             sigma[gl.pv.csf] = sigma[gl.csf]
         else:
-            lesion_to_white = gl.pv.lesion + (gl.pv.white-gl.pv.lesion)//2
-            white_to_gray = gl.pv.white + (gl.pv.gray-gl.pv.white)//2
-            gray_to_csf = gl.pv.gray + (gl.pv.csf-gl.pv.gray)//2
+            lesion_to_white = gl.pv.lesion + (gl.pv.white - gl.pv.lesion) // 2
+            white_to_gray = gl.pv.white + (gl.pv.gray - gl.pv.white) // 2
+            gray_to_csf = gl.pv.gray + (gl.pv.csf - gl.pv.gray) // 2
 
-            mu[gl.pv.lesion:lesion_to_white] = mu[gl.lesion]
+            mu[gl.pv.lesion : lesion_to_white] = mu[gl.lesion]
             mu[lesion_to_white:white_to_gray] = mu[gl.white]
             mu[white_to_gray:gray_to_csf] = mu[gl.gray]
-            mu[gray_to_csf:gl.pv.csf + 1] = mu[gl.csf]
+            mu[gray_to_csf : gl.pv.csf + 1] = mu[gl.csf]
 
-            sigma[gl.pv.lesion:lesion_to_white] = sigma[gl.lesion]
+            sigma[gl.pv.lesion : lesion_to_white] = sigma[gl.lesion]
             sigma[lesion_to_white:white_to_gray] = sigma[gl.white]
             sigma[white_to_gray:gray_to_csf] = sigma[gl.gray]
-            sigma[gray_to_csf:gl.pv.csf + 1] = sigma[gl.csf]
+            sigma[gray_to_csf : gl.pv.csf + 1] = sigma[gl.csf]
 
         self.mu = mu
         self.sigma = sigma
@@ -218,15 +220,15 @@ class SynthesizeIntensityImage(BaseTransform):
         # [0.5, 3.0] 1-4
         # [2.0, 5.0]
         rhos = [
-            1.0 + torch.rand(1, device=image.device) * 3.0, # WM-GM     [1.0, 4.0]
-            2.0 + torch.rand(1, device=image.device) * 2.0, # GM-CSF    [2.0, 4.0]
+            1.0 + torch.rand(1, device=image.device) * 3.0,  # WM-GM     [1.0, 4.0]
+            2.0 + torch.rand(1, device=image.device) * 2.0,  # GM-CSF    [2.0, 4.0]
         ]
         info = [(gl.pv.white, gl.pv.gray), (gl.pv.gray, gl.pv.csf)]
 
         # out = torch.clone(image)
         out = image
 
-        for pv,rho in zip(info, rhos):
+        for pv, rho in zip(info, rhos):
             half_size = (pv[1] - pv[0]) / 2  # halfway point
             mask = (image >= pv[0]) & (image <= pv[1])
             labels = image[mask]
@@ -324,17 +326,26 @@ class IntensityNormalization(BaseTransform):
         self,
         low: float = 0.001,
         high: float = 0.999,
+        use_kthvalue: bool = True,
         device: None | torch.device = None,
     ) -> None:
         super().__init__(device)
         self.low = low
         self.high = high
+        self.use_kthvalue = use_kthvalue
 
     def forward(self, image):
-        C,*spatial_dims = image.shape
+        C, *spatial_dims = image.shape
         ones = tuple(1 for _ in spatial_dims)
-        ql = image.reshape(C, -1).quantile(self.low, dim=-1)
-        qu = image.reshape(C, -1).quantile(self.high, dim=-1)
+
+        image_flat = image.reshape(C, -1)
+        if self.use_kthvalue:
+            n = image_flat.shape[1]
+            ql = image_flat.kthvalue(round(n * self.low), dim=-1).values
+            qu = image_flat.kthvalue(round(n * self.high), dim=-1).values
+        else:
+            ql = image_flat.quantile(self.low, dim=-1)
+            qu = image_flat.quantile(self.high, dim=-1)
 
         image = image - ql.reshape(C, *ones)
         span = qu - ql
@@ -403,8 +414,7 @@ class RandBiasfield(RandomizableTransform):
         size: tuple | list | torch.Size | torch.Tensor,
         scale_min: float,
         scale_max: float,
-        std_min: float,
-        std_max: float,
+        std: float,
         photo_mode: bool = False,
         interpolate_kwargs: dict | None = None,
         prob: float = 1.0,
@@ -419,13 +429,11 @@ class RandBiasfield(RandomizableTransform):
         )
 
         if self.should_apply_transform():
-            self.generate_biasfield(scale_min, scale_max, std_min, std_max)
+            self.generate_biasfield(scale_min, scale_max, std)
         else:
             self.biasfield = None
 
-    def generate_biasfield(
-        self, scale_min: float, scale_max: float, std_min: float, std_max: float
-    ):
+    def generate_biasfield(self, scale_min: float, scale_max: float, std: float):
         """Synthesize a bias field."""
 
         bf_scale = scale_min + torch.rand(1, device=self.device) * (
@@ -437,18 +445,15 @@ class RandBiasfield(RandomizableTransform):
             bf_small_size[1] = torch.round(self.size[1] / self.spacing).to(torch.int)
 
         # reduced size
-        bf_small = std_min + (std_max - std_min) * torch.rand(
-            1, device=self.device
-        ) * torch.randn(*bf_small_size, device=self.device)
+        N = torch.distributions.Normal(torch.tensor(0.0, device=self.device), std)
+        bf_small = N.sample(bf_small_size)
 
         # Resize
         self.biasfield = torch.nn.functional.interpolate(
             input=bf_small[None, None],  # add batch, channel dims
             size=tuple(self.size),
             **self.interpolate_kwargs,
-        )[
-            0
-        ].exp()  # remove batch dim
+        )[0].exp()  # remove batch dim
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """Add a log-transformed bias field to an image."""
@@ -456,7 +461,9 @@ class RandBiasfield(RandomizableTransform):
 
 
 class RandBlendImages(RandomizableTransform):
-    def __init__(self, blend_images: torch.Tensor | list[torch.Tensor], prob: float = 1.0):
+    def __init__(
+        self, blend_images: torch.Tensor | list[torch.Tensor], prob: float = 1.0
+    ):
         super().__init__(prob)
 
         if isinstance(blend_images, torch.Tensor):
