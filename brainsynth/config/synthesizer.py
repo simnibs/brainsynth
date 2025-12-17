@@ -64,7 +64,7 @@ class SynthesizerConfig(PredictionConfig):
         out_center_str: str = "image",
         align_corners: bool = True,
         segmentation_labels: list[int] | tuple | str = "brainseg",
-        photo_mode: bool = False,
+        photo_mode_prob: float = 0.0,
         photo_spacing_range: list[float] | tuple[float, float] = (2.0, 7.0),
         photo_thickness: float = 0.001,
         generation_image: str = "generation_labels_dist",
@@ -91,7 +91,7 @@ class SynthesizerConfig(PredictionConfig):
         self.segmentation_labels = segmentation_labels
         self.segmentation_num_labels = len(self.segmentation_labels)
 
-        self.photo_mode = photo_mode
+        self.photo_mode_prob = photo_mode_prob
 
         assert len(photo_spacing_range) == 2
         self.photo_spacing_range = photo_spacing_range

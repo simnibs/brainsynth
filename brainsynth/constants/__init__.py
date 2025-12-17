@@ -108,6 +108,7 @@ class ImageData:
     dtype: torch.dtype
     transform: Callable = lambda x: x
     defacingmask: None | str = None
+    lateralization: None | str = None
 
 
 # distance maps (clipped at [-5, 5] mm) are encoded as
@@ -172,10 +173,18 @@ class ImageSettings:
                 "generation_labels_upsampled_075.nii", torch.int32
             ),
             generation_labels_dist=ImageData("generation_labels_dist.nii", torch.int32),
-            lp_dist_map=ImageData("lp_dist_map.nii", torch.float, t_dist_map),
-            lw_dist_map=ImageData("lw_dist_map.nii", torch.float, t_dist_map),
-            rp_dist_map=ImageData("rp_dist_map.nii", torch.float, t_dist_map),
-            rw_dist_map=ImageData("rw_dist_map.nii", torch.float, t_dist_map),
+            lp_dist_map=ImageData(
+                "lp_dist_map.nii", torch.float, t_dist_map, lateralization="lh"
+            ),
+            lw_dist_map=ImageData(
+                "lw_dist_map.nii", torch.float, t_dist_map, lateralization="lh"
+            ),
+            rp_dist_map=ImageData(
+                "rp_dist_map.nii", torch.float, t_dist_map, lateralization="rh"
+            ),
+            rw_dist_map=ImageData(
+                "rw_dist_map.nii", torch.float, t_dist_map, lateralization="rh"
+            ),
             mni_reg_x=ImageData("mni_reg.x.nii", torch.float, t_mni_reg),
             mni_reg_y=ImageData("mni_reg.y.nii", torch.float, t_mni_reg),
             mni_reg_z=ImageData("mni_reg.z.nii", torch.float, t_mni_reg),

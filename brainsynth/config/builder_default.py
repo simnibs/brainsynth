@@ -1,153 +1,16 @@
-from dataclasses import dataclass
 from functools import partial
 import torch
 
 import brainsynth
-from brainsynth.constants import mapped_input_keys as mikeys
 from brainsynth.config.synthesizer import SynthesizerConfig
 from brainsynth.transforms import *
-from brainsynth.transforms.utils import recursive_function
 from brainsynth.constants import IMAGE
-
-
-class Pipelines(dict):
-    def __init__(self, *args, **kwargs):
-        """Collection of pipelines in a dict style layout that can be executed
-        in sequence.
-        """
-        super().__init__(*args, **kwargs)
-
-    def execute(self, mapped_inputs: dict, key: str | tuple, prune_none: bool = True):
-        """Execute the pipelines. The output is stored in `mapped_inputs` which
-        means that previously computed items are available for subsequent
-        steps.
-        """
-        for k, pipeline in self.items():
-            match pipeline:
-                case Pipeline():
-                    res = pipeline(mapped_inputs)
-                case Pipelines():
-                    if prune_none:
-                        res = {}
-                        for kk, vv in pipeline.items():
-                            out = vv(mapped_inputs)
-                            if out is not None:
-                                res[kk] = out
-                    else:
-                        res = {kk: vv(mapped_inputs) for kk, vv in pipeline.items()}
-                case None:
-                    res = None
-                case _:
-                    res = pipeline()
-            # If a pipeline was skipped (e.g., because the input did not exist,
-            # then `res` is None)
-            mapped_inputs[key][k] = res
-        return mapped_inputs[key]
-
-
-class StatePipelines(Pipelines):
-    """Pipelines which write to the `state` entry of `mapped_inputs`."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def execute(self, mapped_inputs: dict):
-        # If a pipeline was skipped (e.g., because the input did not exist,
-        # then `res` is None)
-        return super().execute(mapped_inputs, mikeys.state)
-
-
-@dataclass
-class OutputPipelines(Pipelines):
-    """Pipelines which write to the `output` entry of `mapped_inputs`."""
-
-    image: Pipeline | None = None
-    affine: Pipeline | None = None
-    images: Pipelines | None = None
-    surfaces: Pipeline | Pipelines | None = None
-
-    def __post_init__(self):
-        super().__init__(**vars(self))
-
-    def execute(self, mapped_inputs: dict):
-        out = super().execute(mapped_inputs, mikeys.output)
-        return SynthesizerOutput(**out)
-
-
-@dataclass
-class SynthesizerOutput(dict):
-    image: torch.Tensor
-    affine: torch.Tensor | None = None
-    images: dict[str, torch.Tensor] | None = None
-    surfaces: dict[str, dict[str, torch.Tensor]] | None = None
-
-    def unsqueeze(self, dim: int = 0):
-        r_unsqueeze = recursive_function(torch.unsqueeze)
-
-        self.image = self.image.unsqueeze(dim)
-        if self.affine is not None:
-            self.affine = self.affine.unsqueeze(dim)
-        if self.images is not None:
-            self.images = r_unsqueeze(self.images, dim)
-        if self.surfaces is not None:
-            self.surfaces = r_unsqueeze(self.surfaces, dim)
-
-
-class SynthBuilder:
-    def __init__(self, config: SynthesizerConfig) -> None:
-        self.config = config
-        self.device = config.device
-
-    def initialize_spatial_transforms(self):
-        """Optional."""
-        pass
-
-    def build_spatial_transforms(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def build_intensity_transforms(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def build_resolution_transforms(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def build_state(self) -> StatePipelines:
-        raise NotImplementedError
-
-    def build_output(self) -> OutputPipelines:
-        raise NotImplementedError
-
-    def build(self):
-        """Build a full synthesizer pipeline by collecting multiple Pipeline
-        instances.
-
-        Parameters
-        ----------
-        config : SynthesizerConfig
-
-
-        Returns
-        -------
-        state :
-            A dictionary of Pipelines/transformations that updates the state of
-        the synthesizer each time it is called.
-        output :
-            A dictionary of Pipelines/transformations that generates the
-            outputs, e.g., a synthesized image and processed T1, T2, surfaces,
-            etc.
-        """
-
-        self.initialize_spatial_transforms()
-        state = self.build_state()
-
-        # The following relies (may rely) on the state
-        self.build_spatial_transforms(**self.config.spatial_transforms_kw)
-        self.build_intensity_transforms(**self.config.intensity_transforms_kw)
-        self.build_resolution_transforms(**self.config.resolution_transforms_kw)
-
-        output = self.build_output()
-
-        return state, output
+from brainsynth.config.utilities import (
+    OutputPipelines,
+    Pipelines,
+    StatePipelines,
+    SynthBuilder,
+)
 
 
 class PredictionBuilder(SynthBuilder):
@@ -266,13 +129,16 @@ class DefaultSynth(SynthBuilder):
         super().__init__(config)
 
     def initialize_spatial_transforms(self):
-        self.nonlinear_transform = RandNonlinearTransform(
+        self.nonlinear_transform = PipelineModule(
+            RandNonlinearTransform,
             self.config.out_size,
             scale_min=0.03,  # 0.10,
             scale_max=0.06,  # 0.15,
             std_max=4.0,
             exponentiate_field=True,
             grid=self.config.grid,
+            photo_mode=SelectState("photo_mode"),
+            photo_spacing=SelectState("photo_spacing"),
             prob=1.0,
             device=self.device,
         )
@@ -291,6 +157,7 @@ class DefaultSynth(SynthBuilder):
 
     def build_state(self):
         return StatePipelines(
+            photo_mode=EvaluateProbability(self.config.photo_mode_prob),
             # spacing of photos (slices)
             photo_spacing=Uniform(*self.config.photo_spacing_range, device=self.device),
             # available images
@@ -309,7 +176,7 @@ class DefaultSynth(SynthBuilder):
                 ),
                 SpatialSize(),
             ),
-            # SurfaceBoundingBox needs some work
+            # SurfaceBoundingBox needs some workclass flip
             surface_bbox=Pipeline(
                 SelectSurface("template"),
                 SurfaceBoundingBox(),
@@ -430,11 +297,9 @@ class DefaultSynth(SynthBuilder):
             self.config.in_res,
             resolution_sampler,
             resolution_sampler_kw,
-            photo_mode=self.config.photo_mode,
-            photo_res_sampler_kwargs=dict(
-                spacing=SelectState("photo_spacing"),
-                slice_thickness=self.config.photo_thickness,
-            ),
+            photo_mode=SelectState("photo_mode"),
+            photo_spacing=SelectState("photo_spacing"),
+            photo_thickness=self.config.photo_thickness,
             prob=0.75,  # 0.75
             device=self.device,
         )
@@ -443,7 +308,8 @@ class DefaultSynth(SynthBuilder):
         return Pipeline(
             # Synthesize image
             SelectImage(self.config.generation_image),
-            SynthesizeIntensityImage(
+            PipelineModule(
+                SynthesizeIntensityImage,
                 mu_low=25.0,
                 mu_high=200.0,
                 # sigma_global_scale=4.0,
@@ -454,19 +320,21 @@ class DefaultSynth(SynthBuilder):
                 pv_tail_length=3.0,
                 pv_from_distances=False,
                 min_cortical_contrast=10.0,
-                photo_mode=self.config.photo_mode,
+                photo_mode=SelectState("photo_mode"),
                 device=self.device,
             ),
             RandGammaTransform(prob=0.33),
             self.extracerebral_augmentation,
             self.image_deformation,  # Transform to output FOV
-            RandBiasfield(
+            PipelineModule(
+                RandBiasfield,
                 self.config.out_size,
                 scale_min=0.01,
                 scale_max=0.04,
                 # std=0.3, # 3T
                 std=0.6,  # 7T
-                photo_mode=self.config.photo_mode,
+                photo_mode=SelectState("photo_mode"),
+                photo_spacing=SelectState("photo_spacing"),
                 prob=0.75,
                 device=self.device,
             ),
@@ -540,11 +408,11 @@ class DefaultSynth(SynthBuilder):
             #     OneHotEncoding(self.config.segmentation_num_labels),
             #     skip_on_InputSelectorError=True,
             # ),
-            brain_dist_map=Pipeline(
-                SelectImage("brain_dist_map"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
+            # brain_dist_map=Pipeline(
+            #     SelectImage("brain_dist_map"),
+            #     self.image_deformation,
+            #     skip_on_InputSelectorError=True,
+            # ),
         )
 
     def build_output(self):
@@ -602,12 +470,11 @@ class OnlySelect(OnlySynth):
         """No intensity augmentation."""
 
         return Pipeline(
-            # Select one of the available (valid) images
+            # Select one of the available (valid) images with equal probability
             PipelineModule(
                 SelectImage,
                 PipelineModule(
                     RandomChoice,
-                    # equal probability of selecting each image
                     SelectState("selectable_images"),
                 ),
             ),
@@ -620,11 +487,6 @@ class OnlySelect(OnlySynth):
     def build_images(self):
         # return {}
         return Pipelines(
-            brain_dist_map=Pipeline(
-                SelectImage("brain_dist_map"),
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
             t1w=Pipeline(
                 SelectImage("t1w"),
                 self.extracerebral_augmentation,
@@ -639,28 +501,6 @@ class OnlySelect(OnlySynth):
                 self.intensity_normalization,
                 skip_on_InputSelectorError=True,
             ),
-        )
-
-    # def build_output(self):
-    #     return OutputPipelines(
-    #         image_hires=self.build_image(),
-    #         image=Pipeline(
-    #             SelectOutput("image_hires"),
-    #             self.resolution_augmentation,
-    #         ),
-    #         **self.build_images(),
-    #         **self.build_surfaces(),
-    #     )
-    def build_output(self):
-        return OutputPipelines(
-            image=self.build_image(),
-            # image=Pipeline(
-            #     SelectOutput("image_hires"),
-            #     self.resolution_augmentation,
-            # ),
-            affine=self.build_affine(),
-            images=self.build_images(),
-            surfaces=self.build_surface(),
         )
 
 
@@ -705,7 +545,7 @@ class OnlySynthIsoT1w(OnlySynthIso):
                 ),
                 device=self.device,
             ),
-            PipelineModule(RandBlendImages, SelectImage("t1w"), prob=0.5),
+            PipelineModule(RandCombineImages, SelectImage("t1w"), prob=0.5),
             self.image_deformation,  # Transform to output FOV
             # RandBiasfield(
             #     self.config.out_size,
@@ -794,13 +634,9 @@ class CropSynth(SynthBuilder):
             RandResolution,
             self.config.out_size,
             self.config.in_res,
-            # res_sampler="RandClinicalSlice",
-            # res_sampler_kwargs = dict(slice_idx=2),
-            photo_mode=self.config.photo_mode,
-            photo_res_sampler_kwargs=dict(
-                spacing=SelectState("photo_spacing"),
-                slice_thickness=self.config.photo_thickness,
-            ),
+            photo_mode=SelectState("photo_mode"),
+            photo_spacing=SelectState("photo_spacing"),
+            photo_thickness=self.config.photo_thickness,
             prob=1.0,
             device=self.device,
         )
@@ -840,7 +676,8 @@ class CropSynth(SynthBuilder):
         return Pipeline(
             # Synthesize image
             SelectImage(self.config.generation_image),
-            SynthesizeIntensityImage(
+            PipelineModule(
+                SynthesizeIntensityImage,
                 mu_low=25.0,
                 mu_high=200.0,
                 sigma_global_scale=4.0,
@@ -849,18 +686,20 @@ class CropSynth(SynthBuilder):
                 pv_tail_length=3.0,
                 pv_from_distances=False,
                 min_cortical_contrast=10.0,
-                photo_mode=self.config.photo_mode,
+                photo_mode=SelectState("photo_mode"),
                 device=self.device,
             ),
             RandGammaTransform(prob=0.33),
             self.extracerebral_augmentation,
             self.image_crop,  # Transform to output FOV
-            RandBiasfield(
+            PipelineModule(
+                RandBiasfield,
                 self.config.out_size,
                 scale_min=0.01,
                 scale_max=0.03,
                 std=0.3,
-                photo_mode=self.config.photo_mode,
+                photo_mode=SelectState("photo_mode"),
+                photo_spacing=SelectState("photo_spacing"),
                 prob=0.75,
                 device=self.device,
             ),
@@ -980,14 +819,15 @@ class SynthOrSelectImage(DefaultSynth):
                     # Synthesize image
                     Pipeline(
                         SelectImage(self.config.generation_image),
-                        SynthesizeIntensityImage(
+                        PipelineModule(
+                            SynthesizeIntensityImage,
                             mu_low=25.0,
                             mu_high=200.0,
                             sigma_global_scale=0.0,
                             sigma_local_scale=10.0,
                             pv_sigma_range=[0.1, 1.5],
                             min_cortical_contrast=20.0,
-                            photo_mode=self.config.photo_mode,
+                            photo_mode=SelectState("photo_mode"),
                             device=self.device,
                         ),
                         # RandGaussianNoise(),

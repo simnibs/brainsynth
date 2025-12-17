@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 import brainsynth
-from brainsynth.constants import IMAGE, SURFACE
+from brainsynth.constants import IMAGE, SURFACE, hemispheres
 from brainsynth.config import DatasetConfig, SynthesizerConfig, XDatasetConfig
 from brainsynth.synthesizer import Synthesizer
 from brainsynth.utilities import apply_affine, unsqueeze_nd
@@ -253,10 +253,14 @@ class SynthesizedDataset(torch.utils.data.Dataset):
                 s_self[h][s] = (s_other[h][s][0], v[1])
 
     def load_data(self, subject):
-        images, affines = self.load_images(subject)
+        if self.load_random_hemisphere:
+            hemi = str(np.random.choice(hemispheres))
+        else:
+            hemi = None
+        images, affines = self.load_images(subject, hemi)
         # load and convert to voxel space of images
         ras2vox = torch.linalg.inv(next(iter(affines.values())))
-        surfaces = self.load_surfaces(subject, ras2vox)
+        surfaces = self.load_surfaces(subject, ras2vox, hemi)
 
         if self.xdataset is not None:
             # select a random subject from xdataset
@@ -271,12 +275,19 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             with torch.no_grad():
                 return self.synthesizer(images, affines, surfaces)
 
-    def load_images(self, subject):
+    def load_images(self, subject, hemi=None):
         images = {}
         affines = {}
         for image in self.images:
-            # Not all subjects have all images
             img = getattr(IMAGE.images, image)
+            if not (
+                hemi is None or img.lateralization is None or img.lateralization == hemi
+            ):
+                # skip image, if it is lateralized to a hemisphere that we do
+                # not load
+                continue
+
+            # Not all subjects have all images
             if (fi := self.get_image_filename(subject, img.filename)).exists():
                 if self.return_affine:
                     images[image], affines[image] = _load_image(
@@ -301,17 +312,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
 
         return images, affines
 
-    def load_surfaces(self, subject, affine=None):
-        return self._load_surfaces(subject, affine)
-
-    @staticmethod
-    def _apply_affine_to_surface(affine, vertices):
-        if affine is None:
-            return vertices
-        else:
-            return apply_affine(affine, vertices)
-
-    def _load_surfaces(self, subject, affine=None):
+    def load_surfaces(self, subject, affine=None, hemi=None):
         # if self.load_faces:
         #     faces = {h: torch.load(self.get_surface_filename(subject, self.target_faces_files), weights_only=True) for h in hemi}
         # else:
@@ -339,23 +340,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         #     for h in hemi
         # }
 
-        if self.load_random_hemisphere:
-            h = str(np.random.choice(("lh", "rh")))
-
-            return {
-                t: {
-                    h: self._apply_affine_to_surface(
-                        affine,
-                        torch.load(
-                            self.get_surface_filename(subject, surface[h]),
-                            weights_only=True,
-                        ),
-                    )
-                }
-                for t, surface in self.surface_files.items()
-            }
-
-        else:
+        if hemi is None:
             return {
                 t: {
                     h: self._apply_affine_to_surface(
@@ -368,6 +353,27 @@ class SynthesizedDataset(torch.utils.data.Dataset):
                 }
                 for t, surface in self.surface_files.items()
             }
+
+        else:
+            return {
+                t: {
+                    hemi: self._apply_affine_to_surface(
+                        affine,
+                        torch.load(
+                            self.get_surface_filename(subject, surface[hemi]),
+                            weights_only=True,
+                        ),
+                    )
+                }
+                for t, surface in self.surface_files.items()
+            }
+
+    @staticmethod
+    def _apply_affine_to_surface(affine, vertices):
+        if affine is None:
+            return vertices
+        else:
+            return apply_affine(affine, vertices)
 
     # def _load_template_surfaces(self, subject, hemi):
     #     # if (t := self.template_surface_kwargs["types"]) is not None:

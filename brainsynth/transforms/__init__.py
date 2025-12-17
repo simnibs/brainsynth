@@ -7,15 +7,19 @@ from .base import (
     BaseTransform,
     EnsureDevice,
     EnsureDType,
+    EvaluateProbability,
     IdentityTransform,
     RandomChoice,
     SequentialTransform,
     SwitchTransform,
 )
 from .contrast import (
+    ApplyMask,
     IntensityNormalization,
+    MaskFromFloatImage,
+    RandApplyMask,
     RandBiasfield,
-    RandBlendImages,
+    RandCombineImages,
     RandGammaTransform,
     RandMaskRemove,
     RandSaltAndPepperNoise,
@@ -63,6 +67,42 @@ from .misc import (
 from brainsynth.constants import mapped_input_keys as mik
 
 __all__ = [
+    # __init__
+    "Pipeline",
+    "PipelineModule",
+    "SubPipeline",
+    "SelectImage",
+    "SelectSurface",
+    "SelectAffine",
+    "SelectState",
+    "SelectOutput",
+    # base
+    "BaseTransform",
+    "EnsureDevice",
+    "EnsureDType",
+    "EvaluateProbability",
+    "IdentityTransform",
+    "RandomChoice",
+    "SequentialTransform",
+    "SwitchTransform",
+    # contrast
+    "ApplyMask",
+    "IntensityNormalization",
+    "MaskFromFloatImage",
+    "RandApplyMask",
+    "RandBiasfield",
+    "RandCombineImages",
+    "RandGammaTransform",
+    "RandMaskRemove",
+    "RandSaltAndPepperNoise",
+    "SynthesizeFromMultivariateNormal",
+    "SynthesizeIntensityImage",
+    # filters
+    "GaussianSmooth",
+    # label
+    "MaskFromLabelImage",
+    "OneHotEncoding",
+    # misc
     "ApplyFunction",
     "AssertCondition",
     "ExtractDictKeys",
@@ -71,24 +111,7 @@ __all__ = [
     "ServeValue",
     "SelectEntry",
     "Uniform",
-    "MaskFromLabelImage",
-    "OneHotEncoding",
-    "BaseTransform",
-    "EnsureDevice",
-    "EnsureDType",
-    "IdentityTransform",
-    "RandomChoice",
-    "SequentialTransform",
-    "SwitchTransform",
-    "IntensityNormalization",
-    "RandBiasfield",
-    "RandBlendImages",
-    "RandGammaTransform",
-    "RandMaskRemove",
-    "RandSaltAndPepperNoise",
-    "SynthesizeFromMultivariateNormal",
-    "SynthesizeIntensityImage",
-    "GaussianSmooth",
+    # spatial
     "AdjustAffineToSpatialCrop",
     "BoundingBoxCorner",
     "BoundingBoxSize",
@@ -109,14 +132,6 @@ __all__ = [
     "SpatialSize",
     "SurfaceBoundingBox",
     "TranslationTransform",
-    "Pipeline",
-    "PipelineModule",
-    "SubPipeline",
-    "SelectImage",
-    "SelectSurface",
-    "SelectAffine",
-    "SelectState",
-    "SelectOutput",
 ]
 
 
@@ -125,21 +140,56 @@ class InputSelectorError(Exception):
 
 
 class InputSelector(torch.nn.Module):
-    def __init__(self, *args):
-        """General class for input selection from the mapped inputs dictionary."""
-        super().__init__()
-        self.selection = args
+    def __init__(self, *args, packed_args=None, mode="recursive"):
+        """General class for input selection from the mapped inputs dictionary.
 
-    def recursive_selection(self, mapped_input, keys):
+        args
+            Arguments for selection (keys)
+        packed_args
+            If not None, assume that the arguments are supplied as an iterable.
+        """
+        super().__init__()
+        self.selection = args if packed_args is None else packed_args
+
+        match mode:
+            case "recursive":
+                self.selector = self._select_recursive
+            case "first":
+                self.selector = self._select_first
+            case "all":
+                self.selector = self._select_all
+            case _:
+                raise ValueError(f"Invalid `mode` {mode}.")
+
+    def _select_recursive(self, mapped_input, keys):
+        """Recursive dict selection, i.e., mapped_input[keys[0]][keys[1]] etc."""
         try:
             selection = mapped_input[keys[0]]
             if len(keys) == 1:
                 return selection
             else:
-                return self.recursive_selection(selection, keys[1:])
+                return self._select_recursive(selection, keys[1:])
         except KeyError:
             raise InputSelectorError(
                 f"No key `{keys[0]}` in `mapped_input` with keys {tuple(mapped_input.keys())}."
+            )
+
+    def _select_first(self, mapped_input, keys):
+        """Select the first valid in in mapped_input."""
+        for k in keys:
+            if k in mapped_input:
+                return mapped_input[k]
+        raise InputSelectorError(
+            f"None of the specified keys ({keys}) exist in `mapped_input` with keys {tuple(mapped_input.keys())}."
+        )
+
+    def _select_all(self, mapped_input, keys):
+        """Return a tuple containing the values of all specified keys."""
+        try:
+            return tuple(mapped_input[k] for k in keys)
+        except KeyError:
+            raise InputSelectorError(
+                f"One or more of the specified keys ({keys}) do exist in `mapped_input` with keys {tuple(mapped_input.keys())}."
             )
 
     def forward(
@@ -152,12 +202,8 @@ class InputSelector(torch.nn.Module):
         """
         if len(self.selection) == 0:
             return mapped_inputs
-        elif len(self.selection) == 1:
-            return self.recursive_selection(mapped_inputs, self.selection)
         else:
-            return self.recursive_selection(
-                mapped_inputs[self.selection[0]], self.selection[1:]
-            )
+            return self.selector(mapped_inputs, self.selection)
 
 
 class SelectImage(InputSelector):

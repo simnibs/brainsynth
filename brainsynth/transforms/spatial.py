@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from functools import singledispatchmethod
 import warnings
 
 import torch
@@ -7,6 +8,7 @@ from brainsynth.transforms.base import BaseTransform, RandomizableTransform
 from brainsynth.transforms import resolution_sampler
 from brainsynth.transforms.filters import GaussianSmooth
 from brainsynth.transforms.utils import channel_last, recursive_method
+import brainsynth.constants
 
 
 class SpatialCropParameters(BaseTransform):
@@ -370,6 +372,7 @@ class RandNonlinearTransform(RandomizableTransform):
         scale_and_square_steps: int = 8,
         grid: None | torch.Tensor = None,
         photo_mode: bool = False,
+        photo_spacing: float = 5.0,
         device: None | torch.device = None,
         prob: float = 1.0,
     ):
@@ -405,7 +408,7 @@ class RandNonlinearTransform(RandomizableTransform):
         size_F_small = torch.round(nonlin_scale * out_size).to(torch.int)
 
         if photo_mode:
-            size_F_small[1] = torch.round(out_size[1] / self.spacing).to(
+            size_F_small[1] = torch.round(out_size[1] / photo_spacing).to(
                 size_F_small.dtype
             )
         nonlin_std = std_max * torch.rand(1, device=self.device)
@@ -758,16 +761,83 @@ class Resize(BaseTransform):
         ).squeeze(0)
 
 
-# class RandFlipImage(RandomizableTransform):
-#     def __init__(self, prob: float = 1):
-#         super().__init__(prob)
+class FlipImage(BaseTransform):
+    def __init__(self, dim: int | tuple | list[int]):
+        super().__init__()
+        self.dim = (dim,) if isinstance(dim, int) else dim
 
-#     def forward(self):
-#         raise NotImplementedError
+    def forward(self, image):
+        return torch.flip(image, self.dim)
+
+
+class RandFlipImage(RandomizableTransform):
+    def __init__(self, dim: int | tuple | list[int], prob: float = 1.0):
+        super().__init__(prob)
+        self._flip_image = FlipImage(dim)
+
+    def forward(self, image):
+        if self.should_apply_transform():
+            image = self._flip_image(image)
+        return image
+
+
+class FlipSurface(BaseTransform):
+    def __init__(self, dim: int, size=None, flip_label: bool = True):
+        super().__init__()
+        self.flip_label = flip_label
+        hemis = brainsynth.constants.hemispheres
+        self.flip_hemi = dict(zip(hemis, hemis[::-1]))
+        self.dim = dim
+        self.size = size
+        # self.width = None if size is None else size[self.dim]  # assume RAS : [W,H,D]
+
+    @recursive_method
+    def _flip_surface_coords(self, coords, width):
+        coords = coords.clone()
+        coords[..., self.dim] = width - coords[..., self.dim]
+        return coords
+
+    @singledispatchmethod
+    def forward(self, surfaces, size=None):
+        raise ValueError(f"Invalid input type {type(surfaces)}")
+
+    @forward.register
+    def _(self, surfaces: torch.Tensor, size=None):
+        # if size is None:
+        #     assert (
+        #         self.size is not None
+        #     ), "You must specify image size either at initialization or runtime"
+        #     size = self.size
+        size = self.size if size is None else size
+        width = 0.0 if size is None else size[self.dim] - 1.0  # assume RAS : [W,H,D]
+        return self._flip_surface_coords(surfaces, width)
+
+    @forward.register
+    def _(self, surfaces: dict, size=None):
+        s = {h: self.forward(v, size) for h, v in surfaces.items()}
+        # NOTE
+        # swap label (e.g., lh -> rh) when flipping image. Not sure if
+        # this is the best thing to do but at least ensures some kind
+        # of consistency: when flipping then faces need to be reordered
+        # which is also the case for rh compared to lh.
+        return {self.flip_hemi[h]: v for h, v in s.items()} if self.flip_label else s
+
+
+class FlipImageAndSurface(BaseTransform):
+    def __init__(self, dim: int | tuple | list[int]):
+        super().__init__()
+        self.dim = (dim,) if isinstance(dim, int) else dim
+        self.flip_image = FlipImage(dim)
+        self.flip_surface = FlipSurface(dim)
+
+    def forward(self, image, surface):
+        fl_image = torch.flip(image, self.dim)
+        fl_surface = self.flip_surface(surface, image.shape[-3:])
+        return fl_image, fl_surface
 
 
 # class RandLRFlipSurface(RandomizableTransform):
-#     def __init__(self, size, prob: float = 1.0):
+#     def __init__(self, size, dim: int, prob: float = 1.0):
 #         super().__init__(prob)
 #         self.flip_hemi = dict(zip(constants.HEMISPHERES, constants.HEMISPHERES[::-1]))
 #         self.dim = 0
@@ -1121,7 +1191,8 @@ class RandResolution(RandomizableTransform):
         res_sampler_kwargs: dict = {},
         photo_mode: bool = False,
         photo_res_sampler: str = "ResolutionSamplerPhoto",
-        photo_res_sampler_kwargs: dict | None = {},
+        photo_spacing: float = 5.0,
+        photo_thickness: float = 0.001,
         prob: float = 1.0,
         device: None | torch.device = None,
     ):
@@ -1136,18 +1207,14 @@ class RandResolution(RandomizableTransform):
         # target resolution
         if self.should_apply_transform():
             if self.photo_mode:
-                if photo_res_sampler_kwargs is None:
-                    photo_res_sampler_kwargs = dict(spacing=None, slice_thickness=0.001)
-                out_res, thickness = getattr(resolution_sampler, photo_res_sampler)(
-                    self.in_res,
-                    **photo_res_sampler_kwargs,
-                    device=self.device,
+                sampler = getattr(resolution_sampler, photo_res_sampler)(
+                    self.in_res, photo_spacing, photo_thickness, self.device
                 )
             else:
-                out_res, thickness = getattr(resolution_sampler, res_sampler)(
-                    **res_sampler_kwargs,
-                    device=self.device,
-                )()
+                sampler = getattr(resolution_sampler, res_sampler)(
+                    **res_sampler_kwargs, device=self.device
+                )
+            out_res, thickness = sampler()
 
             sigma = (
                 (0.85 + 0.3 * torch.rand(1, device=self.device))

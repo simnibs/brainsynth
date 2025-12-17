@@ -6,7 +6,13 @@ from .base import BaseTransform
 
 
 class RandClinicalSlice(BaseTransform):
-    def __init__(self, low: float = 2.5, high: float = 8.5, slice_idx: int | None  = None, device: None | torch.device = None):
+    def __init__(
+        self,
+        low: float = 2.5,
+        high: float = 8.5,
+        slice_idx: int | None = None,
+        device: None | torch.device = None,
+    ):
         super().__init__(device)
         self.slice_idx = slice_idx
         with torch.device(self.device):
@@ -18,16 +24,17 @@ class RandClinicalSlice(BaseTransform):
             resolution = torch.tensor([1.0, 1.0, 1.0])
             thickness = torch.tensor([1.0, 1.0, 1.0])
 
-            idx = torch.randint(0, 3, (1,)) if self.slice_idx is None else self.slice_idx
+            idx = (
+                torch.randint(0, 3, (1,)) if self.slice_idx is None else self.slice_idx
+            )
 
             resolution[idx] = self.uniform.sample()
-            thickness[idx] = torch.minimum(
-                resolution[idx], 4.0 + 2.0 * torch.rand(1)
-            )
+            thickness[idx] = torch.minimum(resolution[idx], 4.0 + 2.0 * torch.rand(1))
         return resolution, thickness
 
+
 class RandLowFieldStock(BaseTransform):
-    def __init__(self, res_base = (1.3, 1.3, 5.0), device: None | torch.device = None):
+    def __init__(self, res_base=(1.3, 1.3, 5.0), device: None | torch.device = None):
         """Random low-field stock sequence (always axial)."""
         super().__init__(device)
         with torch.device(self.device):
@@ -42,7 +49,10 @@ class RandLowFieldStock(BaseTransform):
 
 class RandLowFieldIsotropic(BaseTransform):
     """Random low-field isotropic-ish scan."""
-    def __init__(self, low: float = 2.0, high: float = 5.0, device: None | torch.device = None):
+
+    def __init__(
+        self, low: float = 2.0, high: float = 5.0, device: None | torch.device = None
+    ):
         super().__init__(device)
         with torch.device(self.device):
             self.uniform = torch.distributions.Uniform(low, high)
@@ -51,6 +61,7 @@ class RandLowFieldIsotropic(BaseTransform):
         resolution = self.uniform.sample((3,))
         thickness = resolution.clone()
         return resolution, thickness
+
 
 class ResolutionSamplerDefault(BaseTransform):
     def __init__(self, device: None | torch.device = None):

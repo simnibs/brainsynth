@@ -1,12 +1,10 @@
 import torch
 
 from brainsynth.constants import mapped_input_keys as mik
+from brainsynth.config import builders
 from brainsynth.config import SynthesizerConfig
-import brainsynth.config.synthesizer_builder
+from brainsynth.config.utilities import SynthesizerOutput
 from brainsynth.transforms import EnsureDevice
-
-from brainsynth.config.synthesizer_builder import SynthesizerOutput
-
 from brainsynth.transforms.utils import recursive_function
 from brainsynth.utilities import squeeze_nd
 
@@ -19,9 +17,7 @@ class Synthesizer(torch.nn.Module):
         self.config = config
         self.ensure_device = EnsureDevice(self.config.device)
 
-        self.builder = getattr(brainsynth.config.synthesizer_builder, config.builder)(
-            config
-        )
+        self.builder = getattr(builders, config.builder)(config)
 
     def forward(
         self,

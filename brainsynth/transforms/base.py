@@ -1,88 +1,22 @@
 import torch
 
+__all__ = [
+    "BaseTransform",
+    "EnsureDevice",
+    "EnsureDType",
+    "EvaluateProbability",
+    "IdentityTransform",
+    "RandomChoice",
+    "RandomizableTransform",
+    "SequentialTransform",
+    "SwitchTransform",
+]
+
 
 class BaseTransform(torch.nn.Module):
     def __init__(self, device: None | torch.device = None) -> None:
         super().__init__()
         self.device = torch.device("cpu") if device is None else device
-
-
-class IdentityTransform(BaseTransform):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x
-
-
-class SequentialTransform(BaseTransform):
-    def __init__(self, *transforms):
-        super().__init__()
-        self.transforms = tuple(transforms)
-
-    def forward(self, x=None):
-        for transform in self.transforms:
-            x = transform() if x is None else transform(x)
-        return x
-
-
-class RandomizableTransform(BaseTransform):
-    """Similar to monai.transforms.RandomizableTransform but using torch."""
-
-    def __init__(self, prob: float = 1.0, device: None | torch.device = None):
-        super().__init__(device)
-        assert 0 <= prob <= 1.0, "Invalid probability"
-        self.prob = prob
-        self.randomize()
-
-    def randomize(self) -> None:
-        """ """
-        self._do_transform = torch.rand(1, device=self.device) < self.prob
-
-    def should_apply_transform(self):
-        return self._do_transform
-
-
-class RandomChoice(BaseTransform):
-    def __init__(
-        self,
-        args: tuple | list,
-        prob: tuple | list | None = None,
-        device: None | torch.device = None,
-    ) -> None:
-        super().__init__(device)
-        n = len(args)
-        if prob is None:
-            self.prob = torch.full((n,), 1 / n, device=device)
-        else:
-            self.prob = torch.tensor(prob, device=device)
-        assert self.prob.sum() == 1.0
-        assert len(args) == len(self.prob)
-        self.choices = args
-
-    def forward(self):
-        return self.choices[torch.multinomial(self.prob, 1)]
-
-
-class SwitchTransform(BaseTransform):
-    def __init__(
-        self,
-        *transforms,
-        prob: tuple | list | None = None,
-        device: None | torch.device = None,
-    ) -> None:
-        super().__init__(device)
-        n = len(transforms)
-        if prob is None:
-            self.prob = torch.full((n,), 1 / n, device=device)
-        else:
-            self.prob = torch.tensor(prob, device=device)
-        assert self.prob.sum() == 1.0
-        assert len(transforms) == len(self.prob)
-        self.transforms = transforms
-
-    def forward(self, x):
-        return self.transforms[torch.multinomial(self.prob, 1)](x)
 
 
 class EnsureDevice(BaseTransform):
@@ -110,3 +44,92 @@ class EnsureDType(BaseTransform):
             return [self.forward(i) for i in x]
         elif isinstance(x, dict):
             return {k: self.forward(v) for k, v in x.items()}
+
+
+class EvaluateProbability(BaseTransform):
+    def __init__(self, prob: float, device: None | torch.device = None) -> None:
+        """Evaluate a probability and return True or False."""
+        super().__init__(device)
+        self.prob = prob
+
+    def forward(self):
+        return torch.rand(1, device=self.device) < self.prob
+
+
+class IdentityTransform(BaseTransform):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
+
+
+class RandomChoice(BaseTransform):
+    def __init__(
+        self,
+        args: tuple | list,
+        prob: tuple | list | None = None,
+        device: None | torch.device = None,
+    ) -> None:
+        """Randomly choose one of `args` with probability `prob`."""
+        super().__init__(device)
+        n = len(args)
+        if prob is None:
+            self.prob = torch.full((n,), 1 / n, device=device)
+        else:
+            self.prob = torch.tensor(prob, device=device)
+        assert self.prob.sum() == 1.0
+        assert len(args) == len(self.prob)
+        self.choices = args
+
+    def forward(self):
+        return self.choices[torch.multinomial(self.prob, 1)]
+
+
+class RandomizableTransform(BaseTransform):
+    """Similar to monai.transforms.RandomizableTransform but using torch."""
+
+    def __init__(self, prob: float = 1.0, device: None | torch.device = None):
+        super().__init__(device)
+        assert 0 <= prob <= 1.0, "Invalid probability"
+        self.prob = prob
+        self.randomize()
+
+    def randomize(self) -> None:
+        """ """
+        self._do_transform = torch.rand(1, device=self.device) < self.prob
+
+    def should_apply_transform(self):
+        return self._do_transform
+
+
+class SequentialTransform(BaseTransform):
+    def __init__(self, *transforms):
+        super().__init__()
+        self.transforms = tuple(transforms)
+
+    def forward(self, x=None):
+        for transform in self.transforms:
+            x = transform() if x is None else transform(x)
+        return x
+
+
+class SwitchTransform(BaseTransform):
+    def __init__(
+        self,
+        *transforms,
+        prob: tuple | list | None = None,
+        device: None | torch.device = None,
+    ) -> None:
+        super().__init__(device)
+        n = len(transforms)
+        if prob is None:
+            self.prob = torch.full((n,), 1 / n, device=device)
+        else:
+            self.prob = torch.tensor(prob, device=device)
+        assert self.prob.sum() == 1.0
+        assert len(transforms) == len(self.prob)
+        self.transforms = transforms
+
+    def forward(self, x):
+        return self.transforms[torch.multinomial(self.prob, 1)](x)

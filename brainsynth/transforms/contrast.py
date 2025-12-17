@@ -1,3 +1,6 @@
+import operator
+from typing import Callable
+
 import torch
 
 from brainsynth.constants import IMAGE
@@ -5,6 +8,22 @@ from brainsynth.transforms.base import BaseTransform, RandomizableTransform
 from brainsynth.transforms.filters import GaussianSmooth
 
 gl = IMAGE.generation_labels
+
+__all__ = [
+    "ApplyMask",
+    "IntensityNormalization",
+    "MaskFromFloatImage",
+    "RandApplyMask",
+    "RandBiasfield",
+    "RandCombineImages",
+    "RandGammaTransform",
+    "RandGaussianNoise",
+    "RandMaskRemove",
+    "RandSaltAndPepperNoise",
+    "RandThreshold",
+    "SynthesizeFromMultivariateNormal",
+    "SynthesizeIntensityImage",
+]
 
 
 class SynthesizeFromMultivariateNormal(BaseTransform):
@@ -298,26 +317,116 @@ class RandSaltAndPepperNoise(RandomizableTransform):
         )
 
     def forward(self, image):
-        if self.should_apply_transform:
+        if self.should_apply_transform():
             sp = self.beta_dist.sample(self.mask_size).squeeze(1)
             image[self.mask] = sp if self.scale is None else sp * self.scale
         return image
 
 
+class ApplyMask(BaseTransform):
+    def __init__(self, mask: torch.Tensor):
+        """Set every not in `mask` to zero."""
+        super().__init__()
+        self.not_mask = ~mask
+
+    def forward(self, image):
+        image[self.not_mask] = 0
+        return image
+
+
+class RandApplyMask(RandomizableTransform):
+    def __init__(
+        self, mask: torch.Tensor, prob: float = 1.0, device: None | torch.device = None
+    ):
+        """Randomly sets everything *not* in mask to 0."""
+        super().__init__(prob, device)
+        self.not_mask = ~mask
+
+    def forward(self, image):
+        if self.should_apply_transform():
+            image[self.not_mask] = 0
+        return image
+
+
 class RandMaskRemove(RandomizableTransform):
     def __init__(
-        self,
-        mask: torch.Tensor,
-        prob: float = 1.0,
-        device: None | torch.device = None,
+        self, mask: torch.Tensor, prob: float = 1.0, device: None | torch.device = None
     ):
         """Randomly sets everything in mask to 0."""
         super().__init__(prob, device)
         self.mask = mask
 
     def forward(self, image):
-        if self.should_apply_transform:
+        if self.should_apply_transform():
             image[self.mask] = 0
+        return image
+
+
+class MaskFromFloatImage(BaseTransform):
+    def __init__(
+        self,
+        t_min: float,
+        t_max: float,
+        comp: Callable = operator.ge,
+        device: None | torch.device = None,
+    ):
+        """Sample threshold from uniform(t_min,t_max) and generate a mask where
+        comp(image, threshold) evaluates to true.
+
+        Parameters
+        ----------
+        t_min, t_max : float
+            Lower (upper) threshold defining the uniform distibution from which
+            the threshold is sampled.
+        comp : Callable, optional
+            Comparison function called as comp(image, threshold) (default =
+            operator.ge, i.e., image > threshold)
+        device : None | torch.device, optional
+        """
+        super().__init__(device)
+        self.uniform = torch.distributions.Uniform(
+            torch.tensor(t_min, device=self.device),
+            torch.tensor(t_max, device=self.device),
+        )
+        self.comp = comp
+
+    def forward(self, image):
+        threshold = self.uniform.sample((1,))
+        return self.comp(image, threshold)
+
+
+class RandThreshold(BaseTransform):
+    def __init__(
+        self,
+        t_min: float,
+        t_max: float,
+        comp: Callable = operator.ge,
+        device: None | torch.device = None,
+    ):
+        """Set everything in the input to 0.0 where comp(image, threshold)
+        evaluates to false. Default behaviour is to remove everything below the
+        sampled threshold.
+
+        Parameters
+        ----------
+        t_min, t_max : float
+            Lower (upper) threshold defining the uniform distibution from which
+            the threshold is sampled.
+        comp : Callable, optional
+            Comparison function called as comp(image, threshold) (default =
+            operator.ge, i.e., image > threshold)
+        device : None | torch.device, optional
+        """
+        super().__init__(device)
+        self.uniform = torch.distributions.Uniform(
+            torch.tensor(t_min, device=self.device),
+            torch.tensor(t_max, device=self.device),
+        )
+        self.comp = operator.le if comp is None else comp
+
+    def forward(self, image):
+        threshold = self.uniform.sample((1,))
+        image[~self.comp(image, threshold)] = 0.0
         return image
 
 
@@ -416,6 +525,7 @@ class RandBiasfield(RandomizableTransform):
         scale_max: float,
         std: float,
         photo_mode: bool = False,
+        photo_spacing: float = 5.0,
         interpolate_kwargs: dict | None = None,
         prob: float = 1.0,
         device: None | torch.device = None,
@@ -424,6 +534,7 @@ class RandBiasfield(RandomizableTransform):
 
         self.size = torch.as_tensor(size, device=self.device)
         self.photo_mode = photo_mode
+        self.photo_spacing = photo_spacing
         self.interpolate_kwargs = interpolate_kwargs or dict(
             mode="trilinear", align_corners=True
         )
@@ -442,7 +553,9 @@ class RandBiasfield(RandomizableTransform):
         bf_small_size = torch.round(bf_scale * self.size).to(torch.int)
 
         if self.photo_mode:
-            bf_small_size[1] = torch.round(self.size[1] / self.spacing).to(torch.int)
+            bf_small_size[1] = torch.round(self.size[1] / self.photo_spacing).to(
+                torch.int
+            )
 
         # reduced size
         N = torch.distributions.Normal(torch.tensor(0.0, device=self.device), std)
@@ -460,9 +573,12 @@ class RandBiasfield(RandomizableTransform):
         return image * self.biasfield if self.should_apply_transform() else image
 
 
-class RandBlendImages(RandomizableTransform):
+class RandCombineImages(RandomizableTransform):
     def __init__(
-        self, blend_images: torch.Tensor | list[torch.Tensor], prob: float = 1.0
+        self,
+        blend_images: torch.Tensor | list[torch.Tensor],
+        mode="one",
+        prob: float = 1.0,
     ):
         super().__init__(prob)
 
@@ -471,17 +587,35 @@ class RandBlendImages(RandomizableTransform):
         else:
             self.blend_images = blend_images
         self.n_blend = len(blend_images)
+        self.mode = mode
 
     def forward(self, image: torch.Tensor):
-        if not self.should_apply_transform:
+        if not self.should_apply_transform():
             return image
 
         # choose image
-        if self.n_blend > 1:
-            i = torch.randint(0, self.n_blend, (1,), device=image.device)
+        if self.n_blend == 1:
+            images = torch.stack((image, self.blend_images[0]))
+            n = 1
         else:
-            i = 0
+            if self.mode == "random":
+                mode = "one" if torch.rand(1, device=image.device) < 0.5 else "all"
+            else:
+                mode = self.mode
+            match mode:
+                case "one":
+                    i = torch.randint(0, self.n_blend, (1,), device=image.device)
+                    images = torch.stack((image, self.blend_images[i]))
+                    n = 1
+                case "all":
+                    images = torch.stack((image, *self.blend_images))
+                    n = self.n_blend
+                case _:
+                    raise RuntimeError(
+                        f"Invalid `mode` {self.mode} (valid options are 'one' and 'all')"
+                    )
 
-        # choose ratio
-        sr = torch.rand(1, device=image.device)
-        return sr * image + (1 - sr) * self.blend_images[i]
+        # linear combination
+        ratio = torch.rand(n + 1, device=image.device)  # image plus blends
+        ratio /= ratio.sum()
+        return torch.sum(ratio[:, *([None] * image.ndim)] * images, 0)
