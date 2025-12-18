@@ -149,19 +149,19 @@ class ExvivoSynth(SynthBuilder):
     ):
         resolution_sampler_kw = resolution_sampler_kw or {}
 
-        # self.resolution_augmentation = PipelineModule(
-        #     RandResolution,
-        #     self.config.out_size,
-        #     self.config.in_res,
-        #     resolution_sampler,
-        #     resolution_sampler_kw,
-        #     photo_mode=SelectState("photo_mode"),
-        #     photo_spacing=SelectState("photo_spacing"),
-        #     photo_thickness=self.config.photo_thickness,
-        #     prob=0.75,
-        #     device=self.device,
-        # )
-        self.resolution_augmentation = IdentityTransform()
+        self.resolution_augmentation = PipelineModule(
+            RandResolution,
+            self.config.out_size,
+            self.config.in_res,
+            resolution_sampler,
+            resolution_sampler_kw,
+            photo_mode=SelectState("photo_mode"),
+            photo_spacing=SelectState("photo_spacing"),
+            photo_thickness=self.config.photo_thickness,
+            prob=0.75,
+            device=self.device,
+        )
+        # self.resolution_augmentation = IdentityTransform()
 
     def build_image(self):
         return Pipeline(
