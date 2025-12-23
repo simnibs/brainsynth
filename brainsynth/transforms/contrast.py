@@ -132,9 +132,13 @@ class SynthesizeIntensityImage(BaseTransform):
 
             # T1w-like contrast!
 
-            # mu[gl.white] = 103.28 + 0.1 * 103.28  * ( torch.rand(1, device=self.device) - 0.5 )
-            # mu[gl.gray] = 73.80 + 0.1 * 73.80  * ( torch.rand(1, device=self.device) - 0.5 )
-            # mu[gl.csf] = 47.49 + 0.1 * 47.49  * ( torch.rand(1, device=self.device) - 0.5 )
+            # mu[gl.white] = 103.28 + 0.1 * 103.28 * (
+            #     torch.rand(1, device=self.device) - 0.5
+            # )
+            # mu[gl.gray] = 73.80 + 0.1 * 73.80 * (
+            #     torch.rand(1, device=self.device) - 0.5
+            # )
+            # mu[gl.csf] = 47.49 + 0.1 * 47.49 * (torch.rand(1, device=self.device) - 0.5)
 
             # subcortical structures are always similar to GM
 
@@ -145,7 +149,7 @@ class SynthesizeIntensityImage(BaseTransform):
             # 9   Left-Putamen                            236  13 176 0
             # 10  Left-Pallidum
             # uni = torch.distributions.Uniform(-0.5, 0.5)
-            # mu[5] = mu[gl.white] + 0.25 * mu[gl.white]  * uni.sample((1,))
+            # mu[5] = mu[gl.white] + 0.25 * mu[gl.white] * uni.sample((1,))
             # mu[6:11] = mu[gl.gray] + 0.25 * mu[gl.gray] * uni.sample((5,))
 
         # set the background to zero in photo mode

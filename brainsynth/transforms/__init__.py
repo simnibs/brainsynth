@@ -306,7 +306,7 @@ class SubPipeline(torch.nn.Module):
         """Partial pipeline which takes an input and transforms it. That is,
         contrary to Pipeline, it should not include an input selection as the
         first step. That main motivation for this class is efficiency: it
-        allows one to initializing a sequence of transformations and then reuse
+        allows one to initialize a sequence of transformations and then reuse
         it in several pipelines. If the individial transformations were simply
         put in to each pipeline, then they would be initialized each time.
         """

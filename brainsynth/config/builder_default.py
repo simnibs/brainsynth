@@ -263,22 +263,24 @@ class DefaultSynth(SynthBuilder):
 
     def build_intensity_transforms(self, extracerebral_augmentation: bool = True):
         if extracerebral_augmentation:
-            self.extracerebral_augmentation = PipelineModule(
-                SwitchTransform,
-                IdentityTransform(),
-                # skull strip
+            self.extracerebral_augmentation = SubPipeline(
                 PipelineModule(
-                    RandMaskRemove,
-                    SelectState("extracerebral_mask"),
+                    SwitchTransform,
+                    IdentityTransform(),
+                    # skull strip
+                    PipelineModule(
+                        RandMaskRemove,
+                        SelectState("extracerebral_mask"),
+                    ),
+                    # salt and pepper noise (e.g., like MP2RAGE)
+                    PipelineModule(
+                        RandSaltAndPepperNoise,
+                        SelectState("extracerebral_mask"),
+                        scale=255.0,
+                        device=self.device,
+                    ),
+                    prob=(0.8, 0.1, 0.1),
                 ),
-                # salt and pepper noise (e.g., like MP2RAGE)
-                PipelineModule(
-                    RandSaltAndPepperNoise,
-                    SelectState("extracerebral_mask"),
-                    scale=255.0,
-                    device=self.device,
-                ),
-                prob=(0.8, 0.1, 0.1),
             )
         else:
             self.extracerebral_augmentation = IdentityTransform()
@@ -291,17 +293,19 @@ class DefaultSynth(SynthBuilder):
     ):
         resolution_sampler_kw = resolution_sampler_kw or {}
 
-        self.resolution_augmentation = PipelineModule(
-            RandResolution,
-            self.config.out_size,
-            self.config.in_res,
-            resolution_sampler,
-            resolution_sampler_kw,
-            photo_mode=SelectState("photo_mode"),
-            photo_spacing=SelectState("photo_spacing"),
-            photo_thickness=self.config.photo_thickness,
-            prob=0.75,  # 0.75
-            device=self.device,
+        self.resolution_augmentation = SubPipeline(
+            PipelineModule(
+                RandResolution,
+                self.config.out_size,
+                self.config.in_res,
+                resolution_sampler,
+                resolution_sampler_kw,
+                photo_mode=SelectState("photo_mode"),
+                photo_spacing=SelectState("photo_spacing"),
+                photo_thickness=self.config.photo_thickness,
+                prob=0.75,  # 0.75
+                device=self.device,
+            )
         )
 
     def build_image(self):
@@ -385,12 +389,11 @@ class DefaultSynth(SynthBuilder):
                 # This pipeline is allowed to fail if the input is not found
                 skip_on_InputSelectorError=True,
             ),
-            t1w_mask=Pipeline(
-                SelectImage("t1w_mask"),
-                self.extracerebral_augmentation,
-                self.image_deformation,
-                skip_on_InputSelectorError=True,
-            ),
+            # t1w_mask=Pipeline(
+            #     SelectImage("t1w_mask"),
+            #     self.image_deformation,
+            #     skip_on_InputSelectorError=True,
+            # ),
             # t2w=Pipeline(
             #     SelectImage("t2w"),
             #     self.image_deformation,
@@ -473,10 +476,7 @@ class OnlySelect(OnlySynth):
             # Select one of the available (valid) images with equal probability
             PipelineModule(
                 SelectImage,
-                PipelineModule(
-                    RandomChoice,
-                    SelectState("selectable_images"),
-                ),
+                PipelineModule(RandomChoice, SelectState("selectable_images")),
             ),
             self.extracerebral_augmentation,
             self.image_deformation,  # Transform to output FOV
@@ -608,37 +608,41 @@ class CropSynth(SynthBuilder):
 
     def build_intensity_transforms(self, extracerebral_augmentation: bool = True):
         if extracerebral_augmentation:
-            self.extracerebral_augmentation = PipelineModule(
-                SwitchTransform,
-                IdentityTransform(),
-                # skull strip
+            self.extracerebral_augmentation = SubPipeline(
                 PipelineModule(
-                    RandMaskRemove,
-                    SelectState("extracerebral_mask"),
+                    SwitchTransform,
+                    IdentityTransform(),
+                    # skull strip
+                    PipelineModule(
+                        RandMaskRemove,
+                        SelectState("extracerebral_mask"),
+                    ),
+                    # salt and pepper noise (e.g., like MP2RAGE)
+                    PipelineModule(
+                        RandSaltAndPepperNoise,
+                        SelectState("extracerebral_mask"),
+                        scale=255.0,
+                        device=self.device,
+                    ),
+                    prob=(0.8, 0.1, 0.1),
                 ),
-                # salt and pepper noise (e.g., like MP2RAGE)
-                PipelineModule(
-                    RandSaltAndPepperNoise,
-                    SelectState("extracerebral_mask"),
-                    scale=255.0,
-                    device=self.device,
-                ),
-                prob=(0.8, 0.1, 0.1),
             )
         else:
             self.extracerebral_augmentation = IdentityTransform()
         self.intensity_normalization = IntensityNormalization()
 
     def build_resolution_transforms(self):
-        self.resolution_augmentation = PipelineModule(
-            RandResolution,
-            self.config.out_size,
-            self.config.in_res,
-            photo_mode=SelectState("photo_mode"),
-            photo_spacing=SelectState("photo_spacing"),
-            photo_thickness=self.config.photo_thickness,
-            prob=1.0,
-            device=self.device,
+        self.resolution_augmentation = SubPipeline(
+            PipelineModule(
+                RandResolution,
+                self.config.out_size,
+                self.config.in_res,
+                photo_mode=SelectState("photo_mode"),
+                photo_spacing=SelectState("photo_spacing"),
+                photo_thickness=self.config.photo_thickness,
+                prob=1.0,
+                device=self.device,
+            )
         )
 
     def build_spatial_transforms(self):

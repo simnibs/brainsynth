@@ -137,8 +137,8 @@ class ExvivoSynth(SynthBuilder):
         )
 
     def build_intensity_transforms(self, *args, **kwargs):
-        self.mask_hemi = PipelineModule(
-            RandApplyMask, SelectState("hemi_mask"), prob=0.5
+        self.mask_hemi = SubPipeline(
+            PipelineModule(RandApplyMask, SelectState("hemi_mask"), prob=0.5),
         )
         self.intensity_normalization = IntensityNormalization()
 
@@ -228,12 +228,19 @@ class ExvivoSynth(SynthBuilder):
         return Pipelines(
             t1w=Pipeline(
                 SelectImage("t1w"),
+                self.mask_hemi,
                 self.image_deformation,
                 self.intensity_normalization,
                 skip_on_InputSelectorError=True,
             ),
-            t1w_mask=Pipeline(
-                SelectImage("t1w_mask"),
+            # t1w_mask=Pipeline(
+            #     SelectImage("t1w_mask"),
+            #     self.mask_hemi,
+            #     self.image_deformation,
+            #     skip_on_InputSelectorError=True,
+            # ),
+            brain_dist_map=Pipeline(
+                SelectImage("lp_dist_map", "rp_dist_map", mode="first"),
                 self.image_deformation,
                 skip_on_InputSelectorError=True,
             ),
@@ -243,7 +250,7 @@ class ExvivoSynth(SynthBuilder):
         return OutputPipelines(
             image=self.build_image(),
             affine=self.build_affine(),
-            # images=self.build_images(),
+            images=self.build_images(),
             surfaces=self.build_surface(),
         )
 
@@ -308,11 +315,13 @@ class ExvivoSynthLinearComb(ExvivoSynth):
 
     def build_intensity_transforms(self, *args, **kwargs):
         super().build_intensity_transforms(*args, **kwargs)
-        self.combine_images = PipelineModule(
-            RandCombineImages,
-            SelectState("selectable_tensors"),
-            mode="random",
-            prob=0.5,
+        self.combine_images = SubPipeline(
+            PipelineModule(
+                RandCombineImages,
+                SelectState("selectable_tensors"),
+                mode="random",
+                prob=0.5,
+            )
         )
 
     def build_image(self):
