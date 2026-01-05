@@ -4,6 +4,18 @@ import torch
 
 from .base import BaseTransform
 
+__all__ = [
+    "Uniform",
+    "ExtractDictKeys",
+    "ExtractDictValues",
+    "SelectEntry",
+    "AssertCondition",
+    "Intersection",
+    "ServeValue",
+    "ApplyFunction",
+    "Concatenate",
+]
+
 
 class Uniform(BaseTransform):
     def __init__(self, low=0.0, high=1.0, device: None | torch.device = None):
@@ -89,3 +101,30 @@ class ApplyFunction(BaseTransform):
 
     def forward(self, x):
         return self.func(x)
+
+
+class Concatenate(BaseTransform):
+    def __init__(self, dim: int = 0, device: None | torch.device = None) -> None:
+        super().__init__(device)
+        self.dim = dim
+
+    def forward(self, tensors):
+        return torch.cat(tensors, self.dim)
+
+
+# class Maximum(BaseTransform):
+#     def __init__(self, dim: int = 0, device: None | torch.device = None) -> None:
+#         super().__init__(device)
+#         self.dim = dim
+
+#     def forward(self, x):
+#         return x.amax(self.dim)
+
+
+# class Minimum(BaseTransform):
+#     def __init__(self, dim: int = 0, device: None | torch.device = None) -> None:
+#         super().__init__(device)
+#         self.dim = dim
+
+#     def forward(self, x):
+#         return x.amax(self.dim)

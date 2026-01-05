@@ -56,6 +56,7 @@ from .label import MaskFromLabelImage, OneHotEncoding
 from .misc import (
     ApplyFunction,
     AssertCondition,
+    Concatenate,
     ExtractDictKeys,
     ExtractDictValues,
     Intersection,
@@ -105,6 +106,7 @@ __all__ = [
     # misc
     "ApplyFunction",
     "AssertCondition",
+    "Concatenate",
     "ExtractDictKeys",
     "ExtractDictValues",
     "Intersection",
@@ -158,6 +160,8 @@ class InputSelector(torch.nn.Module):
                 self.selector = self._select_first
             case "all":
                 self.selector = self._select_all
+            case "all valid":
+                self.selector = self._select_all_valid
             case _:
                 raise ValueError(f"Invalid `mode` {mode}.")
 
@@ -191,6 +195,11 @@ class InputSelector(torch.nn.Module):
             raise InputSelectorError(
                 f"One or more of the specified keys ({keys}) do exist in `mapped_input` with keys {tuple(mapped_input.keys())}."
             )
+
+    def _select_all_valid(self, mapped_input, keys):
+        """Return a tuple containing the values of all specified keys that
+        exist in `mapped_input`."""
+        return tuple(mapped_input[k] for k in keys if k in mapped_input)
 
     def forward(
         self,
