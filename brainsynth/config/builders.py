@@ -12,8 +12,10 @@ from .builder_default import (
     PredictionBuilder,
 )
 from .builder_exvivo import (
+    ExvivoCropSelect,
+    ExvivoCropSynth,
     ExvivoSelect,
     ExvivoSelectIso,
     ExvivoSynth,
-    ExvivoSynthLinearComb,
+    ExvivoSynthLinearMix,
 )

@@ -72,6 +72,7 @@ class DatasetConfig:
         datasets: None | list | tuple = None,
         images: None | list | tuple = None,
         exclude_subjects: None | str = None,
+        raise_on_invalid_image: bool = True,
         **kwargs,
     ):
         known_datasets = (
@@ -107,15 +108,16 @@ class DatasetConfig:
         images = ("generation_labels",) if images is None else images
         use_images = {}
         for ds in datasets:
-            use_images[ds] = []
-            for i in images:
-                if i in valid_images[ds]:
-                    use_images[ds].append(i)
-                else:
+
+            def _filter_func(i):
+                val = i in valid_images[ds]
+                if not val and raise_on_invalid_image:
                     raise ValueError(
                         f"Invalid image `{i}` for dataset {ds}. Valid images are {valid_images[ds]}"
                     )
-        # use_images = {ds: [i for i in images if i in valid_images[ds]] for ds in datasets}
+                return val
+
+            use_images[ds] = list(filter(_filter_func, images))
 
         root_dir = Path(root_dir)
         subject_dir = Path(subject_dir)
