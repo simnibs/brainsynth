@@ -63,7 +63,7 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         ds_structure: str = "tree",
         surfaces: list[dict] | dict | None = {},
         return_affine: bool = True,
-        load_random_hemisphere: bool = False,
+        load_random_hemisphere: bool | float = False,
         exclude_subjects: None | str | list | tuple = None,
         xdataset: None | XDatasetConfig = None,  # or XDataset
     ):
@@ -141,6 +141,11 @@ class SynthesizedDataset(torch.utils.data.Dataset):
         self._initialize_image_settings(images)
         self.return_affine = return_affine
 
+        if isinstance(load_random_hemisphere, float):
+            if np.isclose(load_random_hemisphere, 0.0):
+                load_random_hemisphere = False
+            elif np.isclose(load_random_hemisphere, 1.0):
+                load_random_hemisphere = True
         self.load_random_hemisphere = load_random_hemisphere
         self._initialize_surface_settings(surfaces)
 
@@ -252,11 +257,17 @@ class SynthesizedDataset(torch.utils.data.Dataset):
             for s, v in hemi.items():
                 s_self[h][s] = (s_other[h][s][0], v[1])
 
+    def _get_hemi(self):
+        match self.load_random_hemisphere:
+            case bool():
+                _load_rand_hemi = self.load_random_hemisphere
+            case float():
+                _load_rand_hemi = np.random.rand() < self.load_random_hemisphere
+        return str(np.random.choice(hemispheres)) if _load_rand_hemi else None
+
     def load_data(self, subject):
-        if self.load_random_hemisphere:
-            hemi = str(np.random.choice(hemispheres))
-        else:
-            hemi = None
+        hemi = self._get_hemi()
+
         images, affines = self.load_images(subject, hemi)
         # load and convert to voxel space of images
         ras2vox = torch.linalg.inv(next(iter(affines.values())))
@@ -628,17 +639,19 @@ class AlignmentDataset(SynthesizedDataset):
         self.trans_name = "mni305-to-ras.{}.pt"
         self.which = ("lh", "rh", "brain")
 
-    def load_transformation(self, subject):
+    def load_transformation(self, subject, hemi=None):
         subject_dir = self.ds_dir / self.name / subject
-        return {
-            k: torch.load(subject_dir / self.trans_name.format(k)) for k in self.which
-        }
+        _trans = self.which if hemi is None else (hemi,)
+        return {k: torch.load(subject_dir / self.trans_name.format(k)) for k in _trans}
+
+    def load_data(self, subject):
+        hemi = self._get_hemi()
+        images, vox2ras = self.load_images(subject, hemi)
+        mni305_to_ras = self.load_transformation(subject, hemi)
+        return images, vox2ras, mni305_to_ras
 
     def __getitem__(self, index):
-        subject = self.subjects[index]
-        image, vox2mri = self.load_images(subject)
-        affines = self.load_transformation(subject)
-        return image, vox2mri, affines
+        return self.load_data(self.subjects[index])
 
 
 def make_dataloader(
