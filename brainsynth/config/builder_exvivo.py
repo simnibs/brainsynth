@@ -75,6 +75,8 @@ class ExvivoSynth(SynthBuilder):
             # mask for cropping to a single hemisphere
             hemi_mask=Pipeline(
                 SelectImage("lp_dist_map", "rp_dist_map", mode="all valid"),
+                PipelineModule(Concatenate, dim=0),
+                PipelineModule(ApplyFunction, partial(torch.amin, dim=0, keepdim=True)),
                 PipelineModule(
                     MaskFromFloatImage, 1.5, 3.0, operator.le, device=self.device
                 ),
@@ -327,10 +329,9 @@ class ExvivoCropSynth(SynthBuilder):
                 ),
             ),
             out_center=Pipeline(
-                ServeValue(self.config.out_center_str),
+                SelectState("hemi_mask"),
                 PipelineModule(
-                    CenterFromString,
-                    SelectState("in_size"),
+                    CenterFromMask,
                     align_corners=self.config.align_corners,
                 ),
             ),
@@ -349,11 +350,6 @@ class ExvivoCropSynth(SynthBuilder):
             PipelineModule(
                 SwitchTransform,
                 IdentityTransform(),
-                # skull strip
-                PipelineModule(
-                    RandMaskRemove,
-                    SelectState("extracerebral_mask"),
-                ),
                 # salt and pepper noise (e.g., like MP2RAGE)
                 PipelineModule(
                     RandSaltAndPepperNoise,
@@ -361,9 +357,9 @@ class ExvivoCropSynth(SynthBuilder):
                     scale=255.0,
                     device=self.device,
                 ),
-                # hemi mask
+                # hemi mask or skull strip
                 PipelineModule(ApplyMask, SelectState("hemi_mask")),
-                prob=(0.5, 0.1, 0.1, 0.3),
+                prob=(0.4, 0.1, 0.5),
             ),
         )
         self.intensity_normalization = IntensityNormalization()

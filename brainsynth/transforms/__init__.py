@@ -31,6 +31,7 @@ from .spatial import (
     AdjustAffineToSpatialCrop,
     BoundingBoxCorner,
     BoundingBoxSize,
+    CenterFromMask,
     CenterFromString,
     CheckCoordsInside,
     Grid,
@@ -117,6 +118,7 @@ __all__ = [
     "AdjustAffineToSpatialCrop",
     "BoundingBoxCorner",
     "BoundingBoxSize",
+    "CenterFromMask",
     "CenterFromString",
     "CheckCoordsInside",
     "Grid",
@@ -379,9 +381,9 @@ class Pipeline(SubPipeline):
             PipelineModule,
             RandomChoice,
         )
-        assert isinstance(
-            self.transforms[0], valid_first_transform
-        ), f"The first transform of a Pipeline must be one of {valid_first_transform} but got {type(self.transforms[0])}."
+        assert isinstance(self.transforms[0], valid_first_transform), (
+            f"The first transform of a Pipeline must be one of {valid_first_transform} but got {type(self.transforms[0])}."
+        )
 
     @staticmethod
     def _collect_input(transform, mapped_inputs):

@@ -89,17 +89,17 @@ class SpatialCrop(BaseTransform):
         super().__init__(device)
         self.size = size  # to validate input
         if slices is None:
-            assert (
-                start is not None and stop is not None
-            ), "`start` and `stop` are required if `slices` is None."
+            assert start is not None and stop is not None, (
+                "`start` and `stop` are required if `slices` is None."
+            )
             self.slices = tuple(slice(int(i), int(j)) for i, j in zip(start, stop))
         else:
             self.slices = slices
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        assert image.size()[-3:] == torch.Size(
-            self.size
-        ), f"Invalid image size {image.size()[-3:]} expected {torch.Size(self.size)}"
+        assert image.size()[-3:] == torch.Size(self.size), (
+            f"Invalid image size {image.size()[-3:]} expected {torch.Size(self.size)}"
+        )
         return image[..., *self.slices]
 
 
@@ -945,9 +945,9 @@ class GridSample(BaseTransform):
         # size
         self.size = size
         if not assume_normalized:
-            assert (
-                size is not None
-            ), "`size` must be provided when `assume_normalized = False`"
+            assert size is not None, (
+                "`size` must be provided when `assume_normalized = False`"
+            )
             assert len(size) == 3
         self.assume_normalized = assume_normalized
 
@@ -999,9 +999,9 @@ class GridSample(BaseTransform):
             return image
 
         if not self.assume_normalized:
-            assert (
-                (image_size := tuple(image.size()[-3:])) == tuple(self.size)
-            ), f"Expected image with spatial dimensions {self.size} but got {image_size}."
+            assert (image_size := tuple(image.size()[-3:])) == tuple(self.size), (
+                f"Expected image with spatial dimensions {self.size} but got {image_size}."
+            )
 
         assert (image_ndim := len(image.shape)) in {3, 4, 5}
 
@@ -1177,6 +1177,29 @@ class CenterFromString(BaseTransform):
         # always sampling exactly in between two voxels which will result in
         # label images that look downsampled. (Also, the exact center is not
         # important.)
+        return res.floor() + 0.5 if self.align_corners else res
+
+
+class CenterFromMask(BaseTransform):
+    def __init__(
+        self,
+        align_corners: bool = True,
+        device: None | torch.device = None,
+    ) -> None:
+        super().__init__(device)
+        self.align_corners = align_corners
+
+    def forward(self, image):
+        # When align_corners = True (in grid sampling), this, together with the
+        # assertion that the FOV size is divisible by 2, ensures that we sample
+        # exactly in the center of a voxel when there is no linear or nonlinear
+        # deformation (we could get almost identical results with cropping).
+        # This is important, especially for label images, as otherwise we are
+        # always sampling exactly in between two voxels which will result in
+        # label images that look downsampled. (Also, the exact center is not
+        # important.)
+        coords = torch.nonzero(image.squeeze(0))
+        res = coords.float().mean(0)
         return res.floor() + 0.5 if self.align_corners else res
 
 
